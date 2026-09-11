@@ -1,0 +1,42 @@
+name: CI
+
+# bosun's test + lint gate.
+#
+# Every module that makes a decision is pure and takes its process runner as an
+# argument (see src/bosun/exec.py), so the whole suite runs on a Linux runner
+# with a fake runner standing in for wsl.exe / powershell.exe. No Windows host,
+# no WSL, no container engine needed to test the logic.
+#
+# Runs through pixi against the committed pixi.lock, so CI resolves the exact
+# same pytest and ruff a contributor gets locally. The alternative — pip
+# installing whatever is latest — means a new ruff release can fail
+# `format --check` on a PR that changed nothing relevant, which is a gate
+# failing for a reason unrelated to the change under review.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          # Fail if pixi.lock is stale relative to pyproject.toml rather than
+          # silently re-solving. A lockfile CI is willing to ignore is not
+          # pinning anything.
+          locked: true
+
+      - name: Lint
+        run: pixi run lint
+
+      - name: Test
+        run: pixi run test

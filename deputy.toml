@@ -1,0 +1,39 @@
+# bosun's CI config, read by deputy (https://github.com/Krande/deputy).
+#
+# deputy owns this repo's PR checks and releases: `deputy pr-review` gates each
+# PR on a conventional title plus exactly one release-* label and posts the
+# sticky comment, and `deputy tag-on-merge` runs semantic-release on merge.
+#
+# deputy ships the full semantic-release defaults itself (angular parser, tag
+# "v{version}", main branch, push over origin, upload to the VCS release), so
+# only the repo-specific bits belong here.
+#
+# COMMIT / PR TITLE TYPES — deputy accepts exactly three:
+#
+#     feat      minor bump
+#     fix       patch bump
+#     chore     no bump
+#
+# with an optional (scope) and an optional ! for a breaking change. Anything
+# else fails the title check outright, so the conventional types that do not
+# appear in that list need a scope instead of a type of their own:
+#
+#     chore(ci): ...       not  ci: ...
+#     chore(docs): ...     not  docs: ...
+#     chore(test): ...     not  test: ...
+#     chore(deps): ...     not  build: ... / deps: ...
+#
+# The same three are semantic-release's allowed_tags, so a commit outside them
+# is invisible to the version calculation as well as to the PR gate.
+
+[pr_review]
+marker = "<!-- DEPUTY_PR_BOT -->"
+# Unlabelled PRs default to no release; label a PR release-patch/minor/major to
+# cut one. Set "release-auto" here to invert that.
+# default_label = "release-skip"
+
+[release]
+# bosun keeps its version in two places, kept in lockstep: the packaging source
+# (pyproject) and the importable __version__. semantic-release bumps both.
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/bosun/__init__.py:__version__"]

@@ -1,0 +1,53 @@
+name: Review Pull Request
+
+# Gates each PR with deputy: conventional title + exactly one release-* label,
+# a next-version preview, and one sticky comment that updates in place.
+#
+# pull_request_target so the job (and GITHUB_TOKEN) can comment + label even on
+# fork PRs. It checks out the BASE ref only and never runs any PR-head code.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, edited, unlabeled]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-review:
+    name: Check Pull Request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base ref (full history for the version calc)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}   # base branch — never the untrusted PR head
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned to a tag rather than tracking deputy's main: a CI gate that
+      # silently changes behaviour when an upstream dependency moves is worse
+      # than one that needs an explicit bump. Bump deliberately.
+      #
+      # Do not pin below v0.5.2. This job installs deputy fresh on every run, and
+      # earlier tags let pip resolve GitPython 3.1.60, which removed an attribute
+      # python-semantic-release reads unconditionally. The resulting failure is
+      # silent — the release is skipped while the job still reports success — so
+      # it reads exactly like ordinary "no release warranted" behaviour.
+      - name: Install deputy
+        run: pip install "deputy @ git+https://github.com/Krande/deputy@v0.5.6"
+
+      - name: Review the PR (checks + sticky comment); fails if a check fails
+        run: deputy pr-review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HAS_SOURCE_KEY: ${{ secrets.SOURCE_KEY != '' }}

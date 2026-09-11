@@ -1,0 +1,96 @@
+# bosun.toml — copy to `bosun.toml` and edit. Every key is optional; bosun's
+# built-in defaults are a working configuration on their own, so a real config
+# is usually three or four lines rather than this whole file.
+#
+# Resolution order, most-specific first:
+#     CLI flag  ->  env var (BOSUN_*)  ->  bosun.toml  ->  built-in default
+#
+# bosun looks for ./bosun.toml, or $BOSUN_TOML, or whatever -c points at.
+# Check what a given config actually resolves to with:  bosun config
+
+[distro]
+# The WSL distro to install and target.
+name = "Ubuntu-24.04"
+
+# Substring used to adopt an already-installed distro when `name` is absent —
+# so an existing Ubuntu-22.04 gets reused instead of a second distro being
+# installed next to it.
+match = "ubuntu"
+
+# Linux username inside the distro. Leave empty to reuse the distro's existing
+# default user, or to be prompted once. Set it here to make `bosun up` fully
+# non-interactive.
+user = ""
+
+# Install the distro when it is missing. Set false on a managed machine where
+# provisioning happens elsewhere, and `bosun up` will fail rather than install.
+install = true
+
+# Enable systemd via /etc/wsl.conf. The engine's service unit needs it.
+systemd = true
+
+[engine]
+# Container engine to provision. Currently: "docker".
+name = "docker"
+
+# How Windows reaches the engine:
+#   "tcp"   plain TCP on `port`, loopback only. Convenient; unauthenticated.
+#   "tls"   mutual TLS on `tls_port`, client certs exported to Windows.
+#   "unix"  unix socket only — nothing exposed to Windows at all.
+#
+# Note that reaching a container engine's API is equivalent to root on the
+# machine. "tcp" on 127.0.0.1 means any process running as you can do that.
+# Use "tls" on a shared or untrusted host, or whenever `host` is not loopback.
+expose = "tcp"
+
+host = "127.0.0.1"
+port = 2375
+tls_port = 2376
+
+[client]
+# Name of the context created on the Windows side.
+context = "bosun"
+manage_context = true
+
+# Install the host-side CLI when it is missing, using `installer`.
+install_cli = true
+installer = "pixi"
+
+[tls]
+# Only read when [engine].expose = "tls".
+dir = "/etc/docker/ssl"
+
+# Certificate subject. Blank fields are omitted from the DN entirely, so the
+# default subject names no organisation and no country.
+country = ""
+org = "bosun"
+ca_cn = "bosun-ca"
+server_cn = "localhost"
+client_cn = "bosun-client"
+
+key_bits = 4096
+ca_days = 3650
+cert_days = 1825
+
+# Subject alternative names on the server certificate. Modern TLS clients
+# ignore the CN, so a name missing from here will fail the handshake — add any
+# extra hostname or address you plan to reach the daemon by.
+san_dns = ["localhost"]
+san_ip = ["127.0.0.1"]
+
+# Where client certs land on Windows. Empty = the engine's conventional
+# directory under %USERPROFILE% (~/.docker for Docker).
+windows_cert_dir = ""
+
+[apt]
+# WSL's NAT can make IPv6 apt fetches hang; forcing IPv4 with short timeouts is
+# what keeps `bosun up` from stalling for minutes on some networks.
+force_ipv4 = true
+retries = 3
+timeout = 15
+
+[vhdx]
+# Path to the distro's ext4.vhdx for `bosun shrink`. Empty = discover it under
+# %LOCALAPPDATA%. Set this when you have several distros and discovery reports
+# an ambiguous match.
+path = ""

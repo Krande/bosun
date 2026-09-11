@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.pixi/
+*.conda
+
+# Note: pixi.lock is deliberately NOT ignored. It pins the dev environment so
+# `pixi run test` and `pixi run lint` resolve identically everywhere, CI
+# included -- without it a new ruff release can fail `format --check` on a PR
+# that changed nothing relevant.
+
+# IDE
+.idea/
+.vscode/

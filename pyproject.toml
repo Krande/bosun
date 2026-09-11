@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bosun"
+version = "0.1.0"
+description = "A small CLI that sets up WSL with a container engine on Windows."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Kristoffer Andersen" }]
+keywords = ["wsl", "windows", "docker", "podman", "containers", "bootstrap"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+]
+# No runtime dependencies on purpose. bosun drives wsl.exe, powershell.exe and
+# the host container CLI as subprocesses, and reads its own TOML with the
+# stdlib tomllib. Keeping the dep list empty means `pixi global install` builds
+# it from a checkout with nothing to resolve but Python itself.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/Krande/bosun"
+Issues = "https://github.com/Krande/bosun/issues"
+
+[project.scripts]
+bosun = "bosun.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bosun"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# RUF001: the ✓/✗ glyphs in the status table are intentional.
+ignore = ["E501", "RUF001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# ── pixi-build: lets `pixi global install bosun --git <url> --tag vX.Y.Z` build
+# and install bosun in one command. bosun has no runtime deps, so there is
+# nothing to resolve here beyond Python. (preview feature — see https://pixi.sh/latest/build/)
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+# bosun drives wsl.exe and is Windows-only at runtime; the other platforms are
+# listed so the package still builds and its pure-logic tests still run in CI
+# on a Linux runner.
+platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
+preview = ["pixi-build"]
+
+[tool.pixi.package.build]
+backend = { name = "pixi-build-python", version = "*" }
+
+[tool.pixi.package.host-dependencies]
+hatchling = "*"
+
+[tool.pixi.package.run-dependencies]
+python = ">=3.12"
+
+# ── pixi workspace: the dev environment, so `pixi run test` works from a clone.
+# Deliberately does NOT declare bosun as a dependency of itself — tests/conftest.py
+# puts src/ on sys.path, so the suite runs against the working tree with no
+# install step and no interaction with the pixi-build package definition above.
+[tool.pixi.dependencies]
+python = ">=3.12"
+pytest = ">=8"
+ruff = "*"
+
+[tool.pixi.tasks]
+test = { cmd = "pytest -q", description = "Run the test suite" }
+lint = { cmd = "ruff check src tests && ruff format --check src tests", description = "Lint and check formatting" }
+fmt = { cmd = "ruff format src tests && ruff check --fix src tests", description = "Apply formatting and safe fixes" }

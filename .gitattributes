@@ -1,0 +1,23 @@
+# Line endings.
+#
+# bosun is developed on Windows and tested on a Linux CI runner, so whether a
+# file arrives as LF or CRLF must not depend on each contributor's core.autocrlf
+# setting. `text=auto` normalises everything to LF in the object store and
+# checks it out native by default.
+* text=auto
+
+# These are checked out as LF everywhere, not just stored that way.
+#
+# pixi.lock is the one that actually bites: CI reads it with `--locked`, and a
+# working copy that picked up CRLF would produce a spurious diff against the
+# stored blob. The rest are files a Linux tool may read directly.
+pixi.lock   text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.toml      text eol=lf
+*.sh        text eol=lf
+
+# Never munge these.
+*.png       binary
+*.ico       binary
+*.conda     binary
