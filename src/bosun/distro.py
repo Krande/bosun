@@ -37,12 +37,16 @@ def list_distros(runner: Runner) -> list[str]:
     comes back empty, whose header is localised (English "NAME", Norwegian
     "NAVN", ...) and so is skipped by position rather than by matching text.
     """
-    res = runner.run(["wsl.exe", "-l", "-q"], timeout=20, encoding=WSL_LIST_ENCODING)
+    res = runner.run(
+        ["wsl.exe", "-l", "-q"], timeout=20, encoding=WSL_LIST_ENCODING, read_only=True
+    )
     names = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
     if names:
         return names
 
-    res = runner.run(["wsl.exe", "-l", "-v"], timeout=20, encoding=WSL_LIST_ENCODING)
+    res = runner.run(
+        ["wsl.exe", "-l", "-v"], timeout=20, encoding=WSL_LIST_ENCODING, read_only=True
+    )
     out: list[str] = []
     for i, line in enumerate([ln for ln in (res.stdout or "").splitlines() if ln.strip()]):
         if i == 0:  # header row, whatever language it is in
@@ -75,7 +79,9 @@ def is_launchable(runner: Runner, name: str, *, timeout: int = 25) -> bool:
     Checked instead of trusting the listing: a distro can appear in ``wsl -l``
     while still unpacking, and every later step would fail confusingly.
     """
-    return runner.run(["wsl.exe", "-d", name, "-u", "root", "--", "true"], timeout=timeout).ok
+    return runner.run(
+        ["wsl.exe", "-d", name, "-u", "root", "--", "true"], timeout=timeout, read_only=True
+    ).ok
 
 
 def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
@@ -93,7 +99,7 @@ def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
         return
 
     log(f"wsl --install failed ({res.stderr.strip() or res.returncode}); trying winget")
-    if runner.run(["winget", "--version"], timeout=30).ok:
+    if runner.run(["winget", "--version"], timeout=30, read_only=True).ok:
         pkg = _winget_id(name)
         # winget exits non-zero when the package is already installed, so its
         # exit code cannot distinguish success from failure here; the
@@ -133,7 +139,7 @@ def register(runner: Runner, name: str, log: Callable[[str], None]) -> None:
     on stdin that nobody is watching.
     """
     for launcher in ("ubuntu2404.exe", "ubuntu2204.exe", "ubuntu.exe"):
-        if runner.run(["where", launcher], timeout=10).ok:
+        if runner.run(["where", launcher], timeout=10, read_only=True).ok:
             log(f"registering via {launcher}")
             runner.run([launcher, "install", "--root"], timeout=1800)
             return
@@ -167,7 +173,7 @@ def ensure_ready(runner: Runner, cfg: Config, log: Callable[[str], None]) -> str
 
 def current_user(wsl: Wsl) -> str | None:
     """The distro's current default login user, if it has one."""
-    res = wsl.sh("whoami", timeout=15)
+    res = wsl.sh("whoami", timeout=15, read_only=True)
     name = res.out
     return name if res.ok and name and name != "root" else None
 
@@ -279,7 +285,7 @@ def configure_wsl_conf(wsl: Wsl, cfg: Config, user: str, log: Callable[[str], No
 
 def systemd_active(wsl: Wsl) -> bool:
     """True when systemd is PID 1 inside the distro."""
-    res = wsl.sh("ps -p 1 -o comm=", user="root", timeout=15)
+    res = wsl.sh("ps -p 1 -o comm=", user="root", timeout=15, read_only=True)
     return res.ok and res.out == "systemd"
 
 

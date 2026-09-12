@@ -64,10 +64,10 @@ def test_result_helpers():
 # ── dry run ────────────────────────────────────────────────────────────────
 
 
-def test_dry_run_executes_reads():
+def test_dry_run_executes_declared_reads():
     inner = FakeRunner().out("wsl.exe -l -q", "Ubuntu-24.04\n")
     runner = DryRunRunner(inner)
-    assert runner.run(["wsl.exe", "-l", "-q"]).out == "Ubuntu-24.04"
+    assert runner.run(["wsl.exe", "-l", "-q"], read_only=True).out == "Ubuntu-24.04"
 
 
 def test_dry_run_skips_writes():
@@ -78,10 +78,18 @@ def test_dry_run_skips_writes():
     assert runner.skipped
 
 
-def test_dry_run_treats_a_redirect_as_a_write():
+def test_dry_run_defaults_to_treating_a_command_as_a_write():
+    """The fail-safe direction: an unmarked command costs a log line, not a change."""
     inner = FakeRunner()
-    DryRunRunner(inner).run(["wsl.exe", "--", "bash", "-lc", "cat /etc/x > /etc/y"])
+    DryRunRunner(inner).run(["something", "unrecognised"])
     assert inner.calls == []
+
+
+def test_dry_run_passes_the_read_flag_through():
+    """The inner runner should see the same declaration, not a rewritten one."""
+    inner = FakeRunner()
+    DryRunRunner(inner).run(["wsl.exe", "-l", "-q"], read_only=True)
+    assert inner.read_flags == [True]
 
 
 # ── TLS rendering (pure) ───────────────────────────────────────────────────
@@ -115,3 +123,63 @@ def test_only_client_material_is_exported():
     assert set(tls.CLIENT_FILES) == {"ca.pem", "cert.pem", "key.pem"}
     assert "ca-key.pem" not in tls.CLIENT_FILES
     assert "server-key.pem" not in tls.CLIENT_FILES
+
+
+# ── script transport ───────────────────────────────────────────────────────
+#
+# Regression tests for a bug found by running bosun against a live distro: a
+# script handed to wsl.exe as a command-line argument loses its single quotes
+# somewhere between Windows argv and bash. `awk '{print $1}'` arrived as
+# `awk {print $1}`, bash expanded $1 to nothing, and the systemd-unit probe
+# reported every unit missing — so `bosun up` decided the engine needed
+# reinstalling and would have purged a working docker.io for docker-ce.
+
+
+def test_scripts_are_base64_encoded_in_transit():
+    runner = FakeRunner()
+    Wsl(runner, "Ubuntu-24.04").sh("awk '{print $1}'", read_only=True)
+    sent = " ".join(runner.calls[0])
+    assert "base64 -d" in sent
+    assert "awk" not in sent, "the raw script must not travel through Windows argv"
+
+
+def test_the_encoded_payload_round_trips():
+    import base64
+
+    script = "systemctl list-unit-files | awk '{print $1}' | grep -qx docker.service"
+    runner = FakeRunner()
+    Wsl(runner, "Ubuntu-24.04").sh(script, read_only=True)
+    payload = runner.calls[0][-1].split("echo ", 1)[1].split(" |", 1)[0]
+    assert base64.b64decode(payload).decode() == script
+
+
+def test_the_payload_is_free_of_characters_that_get_mangled():
+    """Base64 is alphanumeric plus +/= — nothing for Windows or wsl.exe to eat."""
+    runner = FakeRunner()
+    Wsl(runner, "Ubuntu-24.04").sh("x='$1'; echo \"a b\" | tr ' ' '_'", read_only=True)
+    payload = runner.calls[0][-1].split("echo ", 1)[1].split(" |", 1)[0]
+    assert not set(payload) & set("'\"$ ")
+
+
+def test_the_readable_script_is_kept_for_display():
+    """--verbose and --dry-run must show the script, not the envelope."""
+    runner = FakeRunner()
+    Wsl(runner, "Ubuntu-24.04").sh("systemctl restart docker")
+    assert runner.displays[0] == "systemctl restart docker"
+
+
+def test_a_script_needing_stdin_bypasses_the_envelope():
+    """write_file carries content on stdin, which the envelope would consume."""
+    runner = FakeRunner()
+    Wsl(runner, "Ubuntu-24.04").write_file("/etc/x", "content")
+    assert "base64 -d" not in " ".join(runner.calls[0])
+    assert runner.stdins[0] == "content"
+
+
+def test_the_stdin_path_script_carries_no_fragile_quoting():
+    """It cannot use the envelope, so it must not depend on quotes surviving."""
+    runner = FakeRunner()
+    Wsl(runner, "Ubuntu-24.04").write_file("/etc/docker/daemon.json", "{}")
+    script = runner.calls[0][-1]
+    assert "'" not in script
+    assert '"' not in script

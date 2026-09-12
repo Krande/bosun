@@ -25,6 +25,11 @@ class FakeRunner:
         self.rules: list[tuple[str, Result | Callable[[str], Result]]] = list(rules or [])
         self.calls: list[list[str]] = []
         self.stdins: list[str | None] = []
+        # Records whether each call declared itself read-only, so tests can
+        # assert that mutating commands are never marked as reads.
+        self.read_flags: list[bool] = []
+        # The human-readable form of each call (the script, not its envelope).
+        self.displays: list[str] = []
         self.default = Result(0)
 
     def on(self, substring: str, result: Result | Callable[[str], Result]) -> FakeRunner:
@@ -46,10 +51,16 @@ class FakeRunner:
         timeout: int | None = None,
         encoding: str | None = None,
         capture: bool = True,
+        read_only: bool = False,
+        display: str | None = None,
     ) -> Result:
         self.calls.append(list(cmd))
         self.stdins.append(stdin)
-        joined = " ".join(cmd)
+        self.read_flags.append(read_only)
+        # Match and record against the readable script rather than the base64
+        # envelope Wsl.sh wraps it in, so rules and assertions stay legible.
+        joined = display or " ".join(cmd)
+        self.displays.append(joined)
         for substring, result in reversed(self.rules):
             if substring in joined:
                 return result(joined) if callable(result) else result
@@ -57,13 +68,22 @@ class FakeRunner:
 
     # ── assertions used by the tests ───────────────────────────────────────
     def ran(self, substring: str) -> bool:
-        return any(substring in " ".join(c) for c in self.calls)
+        return any(substring in d for d in self.displays)
 
     def count(self, substring: str) -> int:
-        return sum(1 for c in self.calls if substring in " ".join(c))
+        return sum(1 for d in self.displays if substring in d)
 
     def matching(self, substring: str) -> list[list[str]]:
-        return [c for c in self.calls if substring in " ".join(c)]
+        return [c for c, d in zip(self.calls, self.displays, strict=False) if substring in d]
+
+    def marked_read_only(self, substring: str) -> bool:
+        """True when every call matching ``substring`` declared read_only."""
+        flags = [
+            flag
+            for display, flag in zip(self.displays, self.read_flags, strict=False)
+            if substring in display
+        ]
+        return bool(flags) and all(flags)
 
 
 def healthy_machine(

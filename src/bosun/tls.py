@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 from .config import Config
 from .engines import EngineSpec
-from .exec import BosunError, Wsl
+from .exec import BosunError, Wsl, is_dry_run
 
 # Exported to Windows. The CA key and the server key are deliberately absent:
 # the client needs to verify the daemon and prove itself, nothing more.
@@ -81,7 +81,7 @@ def generate(wsl: Wsl, cfg: Config, log: Callable[[str], None], *, force: bool =
         return
 
     log("generating TLS certificates")
-    res = wsl.sh("command -v openssl", user="root", timeout=15)
+    res = wsl.sh("command -v openssl", user="root", timeout=15, read_only=True)
     if not res.ok:
         raise BosunError(
             "openssl is not installed in the distro; bosun installs it as part of "
@@ -168,6 +168,14 @@ def export_to_windows(
     works regardless of where the distro is stored.
     """
     dest = windows_cert_dir(cfg, spec, home)
+
+    # This is the one place bosun writes to the Windows filesystem rather than
+    # through a subprocess, so DryRunRunner cannot intercept it and the check
+    # has to be explicit.
+    if is_dry_run(wsl.runner):
+        log(f"  [dry-run] would export client certificates to {dest}")
+        return dest
+
     dest.mkdir(parents=True, exist_ok=True)
     tls_dir = cfg.tls["dir"].rstrip("/")
 

@@ -16,6 +16,7 @@ Three runners ship here:
 
 from __future__ import annotations
 
+import base64
 import itertools
 import os
 import shutil
@@ -58,7 +59,12 @@ class Result:
 
 
 class Runner(Protocol):
-    """Runs a command and returns its :class:`Result`. Never raises on non-zero."""
+    """Runs a command and returns its :class:`Result`. Never raises on non-zero.
+
+    ``read_only`` declares that a command observes without changing anything.
+    It defaults to False, so a command is assumed to mutate unless its caller
+    says otherwise — see :class:`DryRunRunner` for why that default matters.
+    """
 
     def run(
         self,
@@ -68,6 +74,8 @@ class Runner(Protocol):
         timeout: int | None = None,
         encoding: str | None = None,
         capture: bool = True,
+        read_only: bool = False,
+        display: str | None = None,
     ) -> Result: ...
 
 
@@ -85,9 +93,11 @@ class SubprocessRunner:
         timeout: int | None = None,
         encoding: str | None = None,
         capture: bool = True,
+        read_only: bool = False,
+        display: str | None = None,
     ) -> Result:
         if self.verbose:
-            print(f"  $ {' '.join(cmd)}", file=sys.stderr)
+            print(f"  $ {display or ' '.join(cmd)}", file=sys.stderr)
         try:
             cp = subprocess.run(
                 list(cmd),
@@ -105,32 +115,31 @@ class SubprocessRunner:
         return Result(cp.returncode, cp.stdout or "", cp.stderr or "")
 
 
-# Commands that only observe. Under --dry-run these still execute, so that a
-# dry run reports on the machine's actual state rather than on a guess.
-READONLY_HINTS = (
-    "-l",
-    "--list",
-    "info",
-    "version",
-    "ls",
-    "cat",
-    "test",
-    "id",
-    "groups",
-    "whoami",
-    "command",
-    "grep",
-    "getent",
-    "ps",
-)
-
-
 @dataclass
 class DryRunRunner:
-    """Wraps a real runner: executes reads, logs and skips everything else."""
+    """Wraps a real runner: executes declared reads, logs and skips everything else.
+
+    Whether a command mutates is declared by its caller via ``read_only``, never
+    inferred from the command string. An earlier version of this class did try
+    to infer it, and the result was a ``--dry-run`` that changed the machine:
+
+    ``bash -lc`` contains ``-l``, which was on the read-only hint list, so every
+    single command sent into WSL matched "read" unless it happened to also
+    contain one of a handful of write keywords. ``systemctl restart docker`` did
+    not, so a dry run restarted the service. Neither did ``docker system prune
+    -af``, so a dry run would have destroyed every image and container on the
+    machine.
+
+    Hence the default: a command with no explicit ``read_only=True`` is treated
+    as a write and skipped. Getting that wrong now costs a missing line of dry
+    run output, rather than an unwanted change to a live system.
+    """
 
     inner: Runner
     skipped: list[list[str]] = field(default_factory=list)
+    #: Marks this runner as a dry run for the few callers that write to the
+    #: Windows filesystem directly rather than through a subprocess.
+    dry_run: bool = True
 
     def run(
         self,
@@ -140,32 +149,33 @@ class DryRunRunner:
         timeout: int | None = None,
         encoding: str | None = None,
         capture: bool = True,
+        read_only: bool = False,
+        display: str | None = None,
     ) -> Result:
-        if self._is_read(cmd):
+        if read_only:
             return self.inner.run(
-                cmd, stdin=stdin, timeout=timeout, encoding=encoding, capture=capture
+                cmd,
+                stdin=stdin,
+                timeout=timeout,
+                encoding=encoding,
+                capture=capture,
+                read_only=True,
+                display=display,
             )
         self.skipped.append(list(cmd))
-        print(f"  [dry-run] {' '.join(cmd)}")
+        # The readable form, not the base64 envelope Wsl.sh wraps scripts in.
+        print(f"  [dry-run] {display or ' '.join(cmd)}")
         return Result(0, "", "")
 
-    # Redirections that discard output. Stripped before the write check, because
-    # `probe >/dev/null` is a probe, not a write — treating the `>` as evidence
-    # of mutation made --dry-run skip pure state queries and answer them with a
-    # synthetic success, which is how a dry run ends up describing a machine
-    # that does not exist.
-    _DISCARDS = (">/dev/null", "> /dev/null", "2>/dev/null", "2> /dev/null", "2>&1")
 
-    @classmethod
-    def _is_read(cls, cmd: Sequence[str]) -> bool:
-        joined = " ".join(cmd)
-        for discard in cls._DISCARDS:
-            joined = joined.replace(discard, " ")
-        # A shell snippet that redirects, installs or removes is a write even if
-        # it mentions a read-only verb somewhere in the pipeline.
-        if any(tok in joined for tok in (">", "install", "rm ", "tee ", "apt-get", "usermod")):
-            return False
-        return any(tok in cmd or tok in joined for tok in READONLY_HINTS)
+def is_dry_run(runner: Runner) -> bool:
+    """True when ``runner`` is a dry run.
+
+    For the handful of places that touch the Windows filesystem directly — the
+    TLS certificate export — where there is no subprocess for
+    :class:`DryRunRunner` to intercept.
+    """
+    return getattr(runner, "dry_run", False)
 
 
 def have(name: str) -> bool:
@@ -200,15 +210,60 @@ class Wsl:
         user: str | None = None,
         timeout: int | None = 60,
         stdin: str | None = None,
+        read_only: bool = False,
     ) -> Result:
-        """Run ``script`` through ``bash -lc`` inside the distro."""
+        """Run ``script`` through bash inside the distro.
+
+        The script is base64-encoded and decoded on the far side, because a
+        script handed to ``wsl.exe`` as a command-line argument does not arrive
+        intact. Windows rebuilds the command line from argv, wsl.exe re-parses
+        it, and single quotes are consumed along the way — so bash receives
+        ``awk {print $1}`` where the caller wrote ``awk '{print $1}'``, expands
+        ``$1`` to nothing, and silently runs a different program. That is not a
+        hypothetical: it made the systemd-unit probe report every unit missing,
+        so ``bosun up`` concluded the engine needed reinstalling and would have
+        purged a working docker.io to replace it with docker-ce.
+
+        Base64 is alphanumeric plus ``+/=`` — no quotes, no ``$``, no spaces —
+        so it survives every layer unchanged, and the far side reconstructs the
+        script byte for byte.
+
+        The exception is a script that needs stdin for data: the envelope uses
+        the inner bash's stdin for the script itself, so those are passed
+        directly and must be written without quoting that matters
+        (see :meth:`write_file`).
+
+        Pass ``read_only=True`` for a script that only observes, so that it
+        still runs under ``--dry-run``. The default assumes a write.
+        """
+        if stdin is None:
+            payload = base64.b64encode(script.encode("utf-8")).decode("ascii")
+            inner = f"echo {payload} | base64 -d | bash -l"
+        else:
+            inner = script
         return self.runner.run(
-            [*self._base(user), "--", "bash", "-lc", script], stdin=stdin, timeout=timeout
+            [*self._base(user), "--", "bash", "-lc", inner],
+            stdin=stdin,
+            timeout=timeout,
+            read_only=read_only,
+            display=script,
         )
 
-    def ok(self, script: str, *, user: str | None = None, timeout: int | None = 30) -> bool:
-        """True when ``script`` exits zero — for probes."""
-        return self.sh(script, user=user, timeout=timeout).ok
+    def ok(
+        self,
+        script: str,
+        *,
+        user: str | None = None,
+        timeout: int | None = 30,
+        read_only: bool = True,
+    ) -> bool:
+        """True when ``script`` exits zero.
+
+        Read-only by default: every caller of this is a probe testing for a
+        condition, and a probe that gets skipped under --dry-run would answer
+        with a synthetic success and send the run down the wrong branch.
+        """
+        return self.sh(script, user=user, timeout=timeout, read_only=read_only).ok
 
     def write_file(
         self,
@@ -228,11 +283,16 @@ class Wsl:
         owner_user, _, owner_group = owner.partition(":")
         owner_group = owner_group or "root"
         tmp = f"/tmp/bosun_{os.getpid()}_{next(_tmp_counter)}"
+        # Deliberately unquoted. This script cannot use the base64 envelope
+        # (stdin carries the file content), so it travels as a command-line
+        # argument where quoting is unreliable — see :meth:`sh`. None of these
+        # paths contain spaces or shell metacharacters, so quoting is not needed
+        # and its absence cannot be mangled.
         script = (
-            'export PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"; '
-            f'cat > "{tmp}"; '
-            f'install -o {owner_user} -g {owner_group} -m {mode} "{tmp}" "{path}"; '
-            f'rm -f "{tmp}"'
+            "export PATH=/usr/sbin:/usr/bin:/sbin:/bin:$PATH; "
+            f"cat > {tmp}; "
+            f"install -o {owner_user} -g {owner_group} -m {mode} {tmp} {path}; "
+            f"rm -f {tmp}"
         )
         return self.runner.run(
             [*self._base("root"), "--", "bash", "-lc", script], stdin=content, timeout=timeout
@@ -244,7 +304,9 @@ class Wsl:
         Reads as root so that files mode 0600 (private keys, sudoers) are
         readable without a permission dance.
         """
-        res = self.runner.run([*self._base("root"), "--", "cat", path], timeout=timeout)
+        res = self.runner.run(
+            [*self._base("root"), "--", "cat", path], timeout=timeout, read_only=True
+        )
         return res.stdout if res.ok else ""
 
     def shutdown(self, *, timeout: int = 30) -> Result:

@@ -47,7 +47,9 @@ def ensure_cli(runner: Runner, cfg: Config, spec: EngineSpec, log: Callable[[str
 
 def context_exists(runner: Runner, spec: EngineSpec, name: str) -> bool:
     """True when a context called ``name`` is already defined."""
-    res = runner.run([spec.host_cli, "context", "ls", "--format", "{{.Name}}"], timeout=60)
+    res = runner.run(
+        [spec.host_cli, "context", "ls", "--format", "{{.Name}}"], timeout=60, read_only=True
+    )
     if not res.ok:
         return False
     return name in {ln.strip() for ln in res.stdout.splitlines() if ln.strip()}
@@ -58,6 +60,7 @@ def context_endpoint(runner: Runner, spec: EngineSpec, name: str) -> str:
     res = runner.run(
         [spec.host_cli, "context", "inspect", name, "--format", "{{.Endpoints.docker.Host}}"],
         timeout=60,
+        read_only=True,
     )
     return res.out if res.ok else ""
 

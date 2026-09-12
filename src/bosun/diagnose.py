@@ -56,10 +56,10 @@ def run_checks(runner: Runner, cfg: Config, spec: EngineSpec) -> list[Check]:
     systemd = distro_mod.systemd_active(wsl)
     checks.append(Check("systemd is PID 1", systemd, "" if systemd else "set [boot] systemd=true"))
 
-    installed = wsl.sh(f"command -v {spec.name}", user="root", timeout=15)
+    installed = wsl.sh(f"command -v {spec.name}", user="root", timeout=15, read_only=True)
     checks.append(Check(f"{spec.name} installed", installed.ok, installed.out))
 
-    active = wsl.sh(f"systemctl is-active {spec.service}", user="root", timeout=20)
+    active = wsl.sh(f"systemctl is-active {spec.service}", user="root", timeout=20, read_only=True)
     checks.append(Check(f"{spec.service} service active", active.out == "active", active.out))
 
     if user:
@@ -105,12 +105,16 @@ def run_checks(runner: Runner, cfg: Config, spec: EngineSpec) -> list[Check]:
     checks.append(Check(f"{spec.host_cli} on the Windows PATH", cli, required=False))
 
     if cli and cfg.expose != "unix":
-        ctx = runner.run([spec.host_cli, "context", "ls", "--format", "{{.Name}}"], timeout=60)
+        ctx = runner.run(
+            [spec.host_cli, "context", "ls", "--format", "{{.Name}}"], timeout=60, read_only=True
+        )
         names = {ln.strip() for ln in ctx.stdout.splitlines() if ln.strip()}
         checks.append(
             Check(f"context {cfg.context!r} exists", cfg.context in names, required=False)
         )
-        reachable = runner.run([spec.host_cli, "--context", cfg.context, "info"], timeout=60).ok
+        reachable = runner.run(
+            [spec.host_cli, "--context", cfg.context, "info"], timeout=60, read_only=True
+        ).ok
         checks.append(Check("Windows client reaches the engine", reachable, required=False))
 
     # Surfaced last because it explains a failure above rather than being one.

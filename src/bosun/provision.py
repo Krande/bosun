@@ -243,7 +243,12 @@ def restart_engine(wsl: Wsl, spec: EngineSpec, log: Callable[[str], None]) -> No
     res = wsl.sh(f"systemctl restart {spec.service}", user="root", timeout=180)
     if not res.ok:
         # The daemon's own journal says why; systemctl's exit code does not.
-        journal = wsl.sh(f"journalctl -u {spec.service} -n 30 --no-pager", user="root", timeout=60)
+        journal = wsl.sh(
+            f"journalctl -u {spec.service} -n 30 --no-pager",
+            user="root",
+            timeout=60,
+            read_only=True,
+        )
         raise BosunError(
             f"{spec.service} failed to start:\n{res.stderr.strip()}\n\n"
             f"--- last journal lines ---\n{journal.stdout.strip()}"
@@ -272,6 +277,6 @@ def wait_for_engine(
 def verify(wsl: Wsl, spec: EngineSpec, log: Callable[[str], None]) -> None:
     """Report the versions of the engine's bundled sub-commands."""
     for sub in spec.verify:
-        res = wsl.sh(f"{spec.name} {sub}", user="root", timeout=30)
+        res = wsl.sh(f"{spec.name} {sub}", user="root", timeout=30, read_only=True)
         label = f"{spec.name} {sub}"
         log(f"  {label}: {res.out.splitlines()[0] if res.ok and res.out else 'unavailable'}")
