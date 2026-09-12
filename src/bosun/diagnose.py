@@ -16,6 +16,7 @@ import sys
 from dataclasses import dataclass
 
 from . import distro as distro_mod
+from . import provision
 from .config import Config
 from .engines import EngineSpec
 from .exec import Runner, Wsl, have
@@ -76,6 +77,17 @@ def run_checks(runner: Runner, cfg: Config, spec: EngineSpec) -> list[Check]:
 
     api = wsl.ok(f"{spec.name} info", user="root", timeout=25)
     checks.append(Check(f"{spec.name} API responds", api))
+
+    # Reported explicitly because the combination is so confusing otherwise: the
+    # API answers, so the engine looks fine, while the service reports failed.
+    strays = provision.stray_daemons(wsl, spec)
+    checks.append(
+        Check(
+            f"{spec.daemon} owned by systemd",
+            not strays,
+            "" if not strays else f"pid {', '.join(strays)} started outside systemd",
+        )
+    )
 
     daemon_cfg = wsl.read_file(spec.daemon_json)
     checks.append(

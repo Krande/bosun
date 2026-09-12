@@ -135,3 +135,76 @@ def test_no_process_probing_remains():
     assert not hasattr(provision, "wait_for_apt")
     assert not hasattr(provision, "LOCK_HOLDERS")
     assert "snapd" not in source
+
+
+# ── daemons systemd does not own ───────────────────────────────────────────
+#
+# Found on a live machine: a bare `dockerd` started by hand (the script bosun
+# replaces fell back to `nohup dockerd &`) held the socket and port while
+# systemctl reported the service failed. `docker ps` worked, `systemctl status`
+# said dead, and a restart would have failed with address-in-use.
+
+from bosun.engines import DOCKER  # noqa: E402
+
+
+def machine_with_stray(pid="738", main_pid="0"):
+    runner = FakeRunner()
+    runner.out("systemctl show docker -p MainPID", f"{main_pid}\n")
+    runner.out("pgrep -x dockerd", f"{pid}\n")
+    return runner
+
+
+def test_a_hand_started_daemon_is_detected():
+    wsl = Wsl(machine_with_stray(), "Ubuntu-24.04")
+    assert provision.stray_daemons(wsl, DOCKER) == ["738"]
+
+
+def test_the_daemon_systemd_owns_is_not_a_stray():
+    wsl = Wsl(machine_with_stray(pid="900", main_pid="900"), "Ubuntu-24.04")
+    assert provision.stray_daemons(wsl, DOCKER) == []
+
+
+def test_no_daemon_running_is_not_a_stray():
+    runner = FakeRunner().on("pgrep -x dockerd", Result(1))
+    assert provision.stray_daemons(Wsl(runner, "Ubuntu-24.04"), DOCKER) == []
+
+
+def test_a_stray_is_stopped_before_the_restart():
+    runner = machine_with_stray()
+    # It exits after the TERM, so no SIGKILL should follow.
+    calls = {"n": 0}
+
+    def pgrep(_joined):
+        calls["n"] += 1
+        return Result(0, "738\n") if calls["n"] == 1 else Result(1)
+
+    runner.on("pgrep -x dockerd", pgrep)
+    wsl = Wsl(runner, "Ubuntu-24.04")
+    assert provision.stop_stray_daemons(wsl, DOCKER, lambda _: None) is True
+    assert runner.ran("kill 738")
+    assert not runner.ran("kill -9")
+
+
+def test_a_stray_that_ignores_sigterm_is_killed():
+    runner = machine_with_stray()
+    wsl = Wsl(runner, "Ubuntu-24.04")
+    provision.stop_stray_daemons(wsl, DOCKER, lambda _: None)
+    assert runner.ran("kill -9 738")
+
+
+def test_restart_stops_a_stray_first():
+    """Otherwise systemd's daemon cannot bind the port the stray still holds."""
+    runner = machine_with_stray()
+    wsl = Wsl(runner, "Ubuntu-24.04")
+    provision.restart_engine(wsl, DOCKER, lambda _: None)
+    order = runner.displays
+    assert next(i for i, d in enumerate(order) if "kill 738" in d) < next(
+        i for i, d in enumerate(order) if "systemctl restart docker" in d
+    )
+
+
+def test_nothing_is_killed_when_there_is_no_stray():
+    runner = FakeRunner().on("pgrep -x dockerd", Result(1))
+    wsl = Wsl(runner, "Ubuntu-24.04")
+    assert provision.stop_stray_daemons(wsl, DOCKER, lambda _: None) is False
+    assert not runner.ran("kill")

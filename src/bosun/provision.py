@@ -245,8 +245,59 @@ def configure_daemon(wsl: Wsl, cfg: Config, spec: EngineSpec, log: Callable[[str
     return changed
 
 
+def stray_daemons(wsl: Wsl, spec: EngineSpec) -> list[str]:
+    """PIDs of engine daemons systemd does not own.
+
+    A daemon started by hand — ``nohup dockerd &``, which is exactly what the
+    script bosun replaces fell back to — keeps holding the socket and the TCP
+    port while ``systemctl status`` cheerfully reports the service as failed.
+    The restart then fails with an address-in-use error that looks nothing like
+    its actual cause, so these have to be found and stopped first.
+    """
+    main_pid = wsl.sh(
+        f"systemctl show {spec.service} -p MainPID --value",
+        user="root",
+        timeout=20,
+        read_only=True,
+    ).out
+    listed = wsl.sh(f"pgrep -x {spec.daemon}", user="root", timeout=20, read_only=True)
+    if not listed.ok:
+        return []
+    return [pid for pid in listed.out.split() if pid and pid != main_pid]
+
+
+def stop_stray_daemons(wsl: Wsl, spec: EngineSpec, log: Callable[[str], None]) -> bool:
+    """Stop any hand-started daemon. Returns True when one was stopped.
+
+    Containers it is running will stop with it. There is no way to hand them
+    over to systemd's daemon, so the caller is expected to have warned first.
+    """
+    pids = stray_daemons(wsl, spec)
+    if not pids:
+        return False
+
+    log(f"stopping {spec.daemon} started outside systemd (pid {', '.join(pids)})")
+    wsl.sh(f"kill {' '.join(pids)}", user="root", timeout=30)
+
+    for _ in range(10):
+        if not stray_daemons(wsl, spec):
+            return True
+        time.sleep(2)
+
+    remaining = stray_daemons(wsl, spec)
+    if remaining:
+        log(f"{spec.daemon} did not exit; sending SIGKILL")
+        wsl.sh(f"kill -9 {' '.join(remaining)}", user="root", timeout=30)
+        time.sleep(2)
+    return True
+
+
 def restart_engine(wsl: Wsl, spec: EngineSpec, log: Callable[[str], None]) -> None:
     """Restart the engine and wait for its API to answer."""
+    # Before systemd's daemon can bind, anything already holding the socket has
+    # to let go — see stop_stray_daemons.
+    stop_stray_daemons(wsl, spec, log)
+
     log(f"restarting {spec.service}")
     wsl.sh(f"systemctl enable {spec.service}", user="root", timeout=90)
     res = wsl.sh(f"systemctl restart {spec.service}", user="root", timeout=180)

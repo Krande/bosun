@@ -42,6 +42,8 @@ class EngineSpec:
     # two providers fighting over the same binaries.
     conflicts: tuple[str, ...]
     service: str
+    # The daemon's process name, for spotting one that systemd does not own.
+    daemon: str
     daemon_json: str
     socket: str
     group: str
@@ -91,6 +93,7 @@ DOCKER = EngineSpec(
     ),
     conflicts=("docker.io",),
     service="docker",
+    daemon="dockerd",
     daemon_json="/etc/docker/daemon.json",
     socket="/var/run/docker.sock",
     group="docker",
@@ -111,6 +114,7 @@ PODMAN = EngineSpec(
     upstream_repo=None,
     conflicts=(),
     service="podman",
+    daemon="podman",
     daemon_json="/etc/containers/containers.conf",
     socket="/run/podman/podman.sock",
     group="podman",
