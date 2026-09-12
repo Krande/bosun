@@ -211,6 +211,7 @@ class Wsl:
         timeout: int | None = 60,
         stdin: str | None = None,
         read_only: bool = False,
+        display: str | None = None,
     ) -> Result:
         """Run ``script`` through bash inside the distro.
 
@@ -246,7 +247,7 @@ class Wsl:
             stdin=stdin,
             timeout=timeout,
             read_only=read_only,
-            display=script,
+            display=display or script,
         )
 
     def ok(
@@ -274,28 +275,35 @@ class Wsl:
         owner: str = "root:root",
         timeout: int = 120,
     ) -> Result:
-        """Write text into the distro by streaming it over stdin.
+        """Write text into the distro, carrying the content as base64.
 
-        Deliberately avoids heredocs, base64 and mktemp: the content never goes
-        through a shell-quoting round trip, so certificates, JSON and sudoers
-        entries all survive verbatim regardless of what characters they contain.
+        The content is encoded and decoded on the far side, so it never passes
+        through a shell-quoting round trip: certificates, JSON and unit files
+        survive verbatim regardless of the characters they contain. The script
+        that does it then rides the same base64 envelope as every other script
+        (see :meth:`sh`), so nothing here depends on quoting surviving Windows
+        argv either.
+
+        An earlier version streamed the content over stdin instead, which meant
+        the script itself had to travel as a plain command-line argument. Trying
+        to make that script quote-proof by dropping the quotes around ``$PATH``
+        broke it outright: inside WSL, ``$PATH`` includes the Windows path, and
+        an unquoted ``/mnt/c/Program Files (x86)/...`` is a bash syntax error.
+        The write then failed silently and the caller carried on regardless.
+
+        Absolute paths for the binaries, so nothing depends on PATH at all.
         """
         owner_user, _, owner_group = owner.partition(":")
         owner_group = owner_group or "root"
         tmp = f"/tmp/bosun_{os.getpid()}_{next(_tmp_counter)}"
-        # Deliberately unquoted. This script cannot use the base64 envelope
-        # (stdin carries the file content), so it travels as a command-line
-        # argument where quoting is unreliable — see :meth:`sh`. None of these
-        # paths contain spaces or shell metacharacters, so quoting is not needed
-        # and its absence cannot be mangled.
+        payload = base64.b64encode(content.encode("utf-8")).decode("ascii")
         script = (
-            "export PATH=/usr/sbin:/usr/bin:/sbin:/bin:$PATH; "
-            f"cat > {tmp}; "
-            f"install -o {owner_user} -g {owner_group} -m {mode} {tmp} {path}; "
-            f"rm -f {tmp}"
+            f"echo {payload} | /usr/bin/base64 -d > {tmp} && "
+            f"/usr/bin/install -o {owner_user} -g {owner_group} -m {mode} {tmp} {path}; "
+            f"rc=$?; /bin/rm -f {tmp}; exit $rc"
         )
-        return self.runner.run(
-            [*self._base("root"), "--", "bash", "-lc", script], stdin=content, timeout=timeout
+        return self.sh(
+            script, user="root", timeout=timeout, display=f"write {path} ({mode} {owner})"
         )
 
     def read_file(self, path: str, *, timeout: int = 30) -> str:

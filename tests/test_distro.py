@@ -154,4 +154,4 @@ def test_wsl_conf_is_written_when_the_user_differs():
     runner = FakeRunner().out("cat /etc/wsl.conf", "[user]\ndefault=other\n")
     wsl = Wsl(runner, "Ubuntu-24.04")
     assert distro.configure_wsl_conf(wsl, resolve(), "dev", lambda _: None) is True
-    assert "default=dev" in (runner.stdins[-1] or "")
+    assert "default=dev" in runner.written_content(-1)

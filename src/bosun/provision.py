@@ -229,8 +229,17 @@ def configure_daemon(wsl: Wsl, cfg: Config, spec: EngineSpec, log: Callable[[str
     if wsl.read_file(override_path).strip() != want_override.strip():
         log("writing the systemd drop-in")
         wsl.sh(f"mkdir -p {override_dir}", user="root", timeout=15)
-        wsl.write_file(override_path, want_override, mode="0644")
-        wsl.sh("systemctl daemon-reload", user="root", timeout=60)
+        # Checked, unlike before: a failed write here left the packaged unit's
+        # -H fd:// in place, so the engine kept refusing to start while bosun
+        # reported the repair as done.
+        res = wsl.write_file(override_path, want_override, mode="0644")
+        if not res.ok:
+            raise BosunError(
+                f"could not write {override_path}: {res.stderr.strip() or res.returncode}"
+            )
+        reload_res = wsl.sh("systemctl daemon-reload", user="root", timeout=60)
+        if not reload_res.ok:
+            raise BosunError(f"systemctl daemon-reload failed: {reload_res.stderr.strip()}")
         changed = True
 
     return changed

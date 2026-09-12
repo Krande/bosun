@@ -27,21 +27,21 @@ def test_wsl_passes_the_user_flag():
     assert "-u" in runner.calls[0] and "root" in runner.calls[0]
 
 
-def test_write_file_streams_content_over_stdin():
+def test_write_file_carries_content_as_base64():
     """Content must never go through a shell-quoting round trip."""
     runner = FakeRunner()
     payload = "tricky 'quotes' $VARS \\backslashes\n"
     Wsl(runner, "Ubuntu-24.04").write_file("/etc/thing", payload)
-    assert runner.stdins[0] == payload
+    assert runner.written_content(0) == payload
     assert payload not in " ".join(runner.calls[0])
 
 
 def test_write_file_installs_with_the_requested_mode_and_owner():
     runner = FakeRunner()
     Wsl(runner, "Ubuntu-24.04").write_file("/etc/x", "y", mode="0600", owner="root:docker")
-    joined = " ".join(runner.calls[0])
-    assert "-m 0600" in joined
-    assert "-o root -g docker" in joined
+    script = runner.decoded_script(0)
+    assert "-m 0600" in script
+    assert "-o root -g docker" in script
 
 
 def test_write_file_always_runs_as_root():
@@ -169,17 +169,22 @@ def test_the_readable_script_is_kept_for_display():
 
 
 def test_a_script_needing_stdin_bypasses_the_envelope():
-    """write_file carries content on stdin, which the envelope would consume."""
+    """The envelope feeds the inner bash on stdin, so data on stdin cannot use it.
+
+    chpasswd is the remaining case: the password goes on stdin specifically to
+    keep it out of the process list.
+    """
     runner = FakeRunner()
-    Wsl(runner, "Ubuntu-24.04").write_file("/etc/x", "content")
+    Wsl(runner, "Ubuntu-24.04").sh("chpasswd", user="root", stdin="dev:secret\n")
     assert "base64 -d" not in " ".join(runner.calls[0])
-    assert runner.stdins[0] == "content"
+    assert runner.stdins[0] == "dev:secret\n"
 
 
-def test_the_stdin_path_script_carries_no_fragile_quoting():
-    """It cannot use the envelope, so it must not depend on quotes surviving."""
+def test_write_file_depends_on_no_shell_path_lookup():
+    """Unquoted $PATH inside WSL contains `Program Files (x86)`, a syntax error."""
     runner = FakeRunner()
     Wsl(runner, "Ubuntu-24.04").write_file("/etc/docker/daemon.json", "{}")
-    script = runner.calls[0][-1]
-    assert "'" not in script
-    assert '"' not in script
+    script = runner.decoded_script(0)
+    assert "$PATH" not in script
+    assert "/usr/bin/install" in script
+    assert "/usr/bin/base64" in script

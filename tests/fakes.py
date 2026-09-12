@@ -9,6 +9,7 @@ specific probe.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable, Sequence
 
 from bosun import daemonjson
@@ -75,6 +76,20 @@ class FakeRunner:
 
     def matching(self, substring: str) -> list[list[str]]:
         return [c for c, d in zip(self.calls, self.displays, strict=False) if substring in d]
+
+    def decoded_script(self, index: int = -1) -> str:
+        """The script a recorded call actually runs, past the base64 envelope."""
+        token = self.calls[index][-1]
+        if "base64 -d" not in token:
+            return token
+        payload = token.split("echo ", 1)[1].split(" |", 1)[0]
+        return base64.b64decode(payload).decode()
+
+    def written_content(self, index: int = -1) -> str:
+        """The file content a recorded write_file call carries (doubly encoded)."""
+        script = self.decoded_script(index)
+        payload = script.split("echo ", 1)[1].split(" |", 1)[0]
+        return base64.b64decode(payload).decode()
 
     def marked_read_only(self, substring: str) -> bool:
         """True when every call matching ``substring`` declared read_only."""
