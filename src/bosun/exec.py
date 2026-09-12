@@ -149,9 +149,18 @@ class DryRunRunner:
         print(f"  [dry-run] {' '.join(cmd)}")
         return Result(0, "", "")
 
-    @staticmethod
-    def _is_read(cmd: Sequence[str]) -> bool:
+    # Redirections that discard output. Stripped before the write check, because
+    # `probe >/dev/null` is a probe, not a write — treating the `>` as evidence
+    # of mutation made --dry-run skip pure state queries and answer them with a
+    # synthetic success, which is how a dry run ends up describing a machine
+    # that does not exist.
+    _DISCARDS = (">/dev/null", "> /dev/null", "2>/dev/null", "2> /dev/null", "2>&1")
+
+    @classmethod
+    def _is_read(cls, cmd: Sequence[str]) -> bool:
         joined = " ".join(cmd)
+        for discard in cls._DISCARDS:
+            joined = joined.replace(discard, " ")
         # A shell snippet that redirects, installs or removes is a write even if
         # it mentions a read-only verb somewhere in the pipeline.
         if any(tok in joined for tok in (">", "install", "rm ", "tee ", "apt-get", "usermod")):
