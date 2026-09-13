@@ -155,3 +155,82 @@ def test_wsl_conf_is_written_when_the_user_differs():
     wsl = Wsl(runner, "Ubuntu-24.04")
     assert distro.configure_wsl_conf(wsl, resolve(), "dev", lambda _: None) is True
     assert "default=dev" in runner.written_content(-1)
+
+
+# ── usernames and passwords ────────────────────────────────────────────────
+#
+# useradd's own refusal is a bare exit code and a message about an "invalid
+# user name" that does not say which rule was broken, so the check happens
+# before the account is created.
+
+
+@pytest.mark.parametrize("name", ["dev", "_svc", "a", "user-1", "x" * 32])
+def test_valid_usernames_are_accepted(name):
+    assert distro.validate_username(name) == name
+
+
+@pytest.mark.parametrize(
+    "name", ["1dev", "Dev", "dev user", "dev!", "", "   ", "-dev", "x" * 33, "dev.name"]
+)
+def test_invalid_usernames_are_rejected(name):
+    with pytest.raises(BosunError, match="not a valid Linux username"):
+        distro.validate_username(name)
+
+
+def test_a_configured_username_is_validated():
+    """A typo in bosun.toml should fail here, not inside useradd."""
+    wsl = Wsl(FakeRunner(), "Ubuntu-24.04")
+    cfg = resolve(overrides={"distro": {"user": "Not Valid"}})
+    with pytest.raises(BosunError, match="not a valid Linux username"):
+        distro.resolve_user(wsl, cfg)
+
+
+def test_an_existing_user_is_not_re_validated():
+    """Linux already accepted it, and bosun's rules may be stricter."""
+    wsl = Wsl(FakeRunner().out("whoami", "Odd.Name\n"), "Ubuntu-24.04")
+    assert distro.resolve_user(wsl, resolve()) == "Odd.Name"
+
+
+def test_generated_passwords_are_random_and_long_enough():
+    a, b = distro.generate_password(), distro.generate_password()
+    assert a != b
+    assert len(a) == 20
+
+
+def test_no_console_for_the_username_explains_the_alternatives(monkeypatch):
+    def no_console(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", no_console)
+    wsl = Wsl(FakeRunner().out("whoami", "root\n"), "Ubuntu-24.04")
+    with pytest.raises(BosunError, match="BOSUN_USER"):
+        distro.resolve_user(wsl, resolve())
+
+
+def test_a_new_account_gets_a_generated_password_without_a_console(monkeypatch):
+    """A sudo-capable account with no password cannot be used interactively
+    later, and that surfaces long after this run."""
+
+    def no_console(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("bosun.distro.getpass.getpass", no_console)
+    runner = FakeRunner().on("id -u dev", Result(1))
+    logs: list[str] = []
+
+    distro.ensure_user(Wsl(runner, "Ubuntu-24.04"), "dev", logs.append)
+
+    assert runner.ran("chpasswd")
+    assert any("generated one" in line for line in logs)
+    assert any("passwd dev" in line for line in logs), "must say how to change it"
+
+
+def test_the_password_never_reaches_the_command_line(monkeypatch):
+    """It goes on stdin so it cannot appear in a process listing."""
+    monkeypatch.setattr("bosun.distro.getpass.getpass", lambda _p: "hunter2")
+    runner = FakeRunner().on("id -u dev", Result(1))
+
+    distro.ensure_user(Wsl(runner, "Ubuntu-24.04"), "dev", lambda _: None)
+
+    assert any("hunter2" in (s or "") for s in runner.stdins)
+    assert not any("hunter2" in " ".join(c) for c in runner.calls)

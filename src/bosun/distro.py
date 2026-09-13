@@ -20,12 +20,42 @@ which is for the human's later convenience and is never needed by bosun itself.
 from __future__ import annotations
 
 import getpass
+import re
+import secrets
+import string
 import time
 from collections.abc import Callable
 
 from . import wslconf
 from .config import Config
 from .exec import WSL_LIST_ENCODING, BosunError, Result, Runner, Wsl
+
+# What useradd will actually accept. Checked before the account is created,
+# because useradd's own refusal is a bare exit code and a message about an
+# "invalid user name" that does not say which rule was broken.
+VALID_USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def validate_username(username: str) -> str:
+    """Return ``username`` if Linux will accept it, else explain why not."""
+    candidate = (username or "").strip()
+    if not VALID_USERNAME.match(candidate):
+        raise BosunError(
+            f"{candidate!r} is not a valid Linux username: lowercase letters, digits, "
+            "'-' and '_', starting with a letter or underscore, at most 32 characters."
+        )
+    return candidate
+
+
+def generate_password(length: int = 20) -> str:
+    """A password for an account nobody asked to choose one for.
+
+    Used when a new account has to be created with no console to prompt at. A
+    sudo-capable account with no password at all is worse: it cannot be used
+    interactively later, and the failure shows up long after this run.
+    """
+    alphabet = string.ascii_letters + string.digits + "!@#%^*-_=+"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def list_distros(runner: Runner) -> list[str]:
@@ -187,11 +217,11 @@ def resolve_user(wsl: Wsl, cfg: Config, *, prompt: bool = True) -> str:
     baked into a config that gets committed.
     """
     if cfg.user:
-        return cfg.user
+        return validate_username(cfg.user)
 
     existing = current_user(wsl)
     if existing:
-        return existing
+        return existing  # already created; Linux accepted it once already
 
     if not prompt:
         raise BosunError(
@@ -199,10 +229,17 @@ def resolve_user(wsl: Wsl, cfg: Config, *, prompt: bool = True) -> str:
             "pass --user, or set BOSUN_USER."
         )
 
-    entered = input("Linux username to create: ").strip()
+    try:
+        entered = input("Linux username to create: ").strip()
+    except (EOFError, KeyboardInterrupt) as exc:
+        # No console to prompt at — a scheduled run, or stdin redirected.
+        raise BosunError(
+            "no Linux username configured and no console to ask at. Set [distro].user "
+            "in bosun.toml, pass --user, or set BOSUN_USER."
+        ) from exc
     if not entered:
         raise BosunError("a Linux username is required")
-    return entered
+    return validate_username(entered)
 
 
 def ensure_user(wsl: Wsl, user: str, log: Callable[[str], None], *, prompt: bool = True) -> None:
@@ -233,13 +270,19 @@ def _set_password(wsl: Wsl, user: str, log: Callable[[str], None]) -> None:
     appears in a process listing or a shell history inside the distro.
     """
     try:
-        pw = getpass.getpass(f"Password for new Linux user {user} (blank to skip): ")
+        pw = getpass.getpass(f"Password for new Linux user {user} (blank to generate one): ")
     except (EOFError, KeyboardInterrupt):
+        # No console to prompt at. Generating beats leaving the account without
+        # one: a sudo-capable account with no password cannot be used
+        # interactively later, and that surfaces long after this run.
         print()
-        return
+        pw = generate_password()
+        log(f"no console for a password prompt; generated one for {user}")
+        log(f"  set your own with: wsl -d <distro> -u root passwd {user}")
     if not pw:
-        log(f"no password set for {user} — set one later with: wsl -u root passwd {user}")
-        return
+        pw = generate_password()
+        log(f"generated a password for {user}")
+        log(f"  set your own with: wsl -d <distro> -u root passwd {user}")
     res = wsl.sh("chpasswd", user="root", stdin=f"{user}:{pw}\n", timeout=30)
     if not res.ok:
         log(f"warning: could not set password for {user}: {res.stderr.strip()}")
