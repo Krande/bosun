@@ -1,19 +1,21 @@
 # CHANGELOG
 
-
-
 ## v0.2.0 (2026-09-13)
+
 
 ### Feature
 
-* feat: keep-alive, kube and repair commands, and seven real-machine fixes (#1) ([`2e1cce3`](https://github.com/Krande/bosun/commit/2e1cce3b3a7f37389f8da3f63e2de70321c0f459))
+* keep-alive, kube and repair commands, and seven real-machine fixes (#1) ([`2e1cce3`](https://github.com/Krande/bosun/commit/2e1cce3b3a7f37389f8da3f63e2de70321c0f459))
 
 
 ## v0.1.0 (2026-09-11)
 
+
 ### Feature
 
-* feat: initial bosun CLI for WSL container-host setup
+* initial bosun CLI for WSL container-host setup ([`032e7e1`](https://github.com/Krande/bosun/commit/032e7e12a38eac5dea9bf4f8ef15838bd466395e))
+
+<details><summary>Details</summary>
 
 Extracts the WSL + container-engine setup from a personal admin script into
 an installable CLI, with the machine-specific bits turned into configuration
@@ -47,4 +49,7 @@ Changes from the original script:
 CI, PR checks and releases are delegated to deputy, pinned to v0.5.6 — below
 v0.5.2 a fresh install resolves a GitPython release that breaks tagging
 silently. pixi.lock is committed and CI runs through pixi with `--locked`, so
-contributors and CI resolve the same pytest and ruff. ([`032e7e1`](https://github.com/Krande/bosun/commit/032e7e12a38eac5dea9bf4f8ef15838bd466395e))
+contributors and CI resolve the same pytest and ruff.
+
+</details>
+
