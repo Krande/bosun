@@ -21,6 +21,6 @@ The container engine is a table entry rather than an assumption — see
 :mod:`bosun.engines`. Docker is implemented; the seam is there for the rest.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]
