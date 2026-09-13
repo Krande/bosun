@@ -11,7 +11,7 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Callable
 
-from . import client, diagnose, distro, engines, providers, provision, tls, vhdx
+from . import client, diagnose, distro, engines, providers, provision, recovery, tls, vhdx
 from . import keepalive as keepalive_mod
 from . import kube as kube_mod
 from .config import Config
@@ -326,3 +326,24 @@ def kube(runner: Runner, cfg: Config, log: Logger, action: str) -> int:
         log(f"  missing: {', '.join(missing)}")
 
     return 0 if (installed and ready and not missing) else 1
+
+
+def repair(runner: Runner, cfg: Config, log: Logger) -> int:
+    """Unstick a WSL install that has stopped responding, then re-check.
+
+    Never unregisters a distro or touches Windows features — both destroy a
+    filesystem, and `bosun down` is where that lives, behind a confirmation.
+    """
+    log("repairing the WSL install (nothing here deletes a distro)")
+    recovery.Recovery(runner, log).recover()
+
+    name = distro.find(runner, cfg)
+    if name is None:
+        log(f"no WSL distro matching {cfg.distro_name!r} is registered")
+        return 1
+    if not distro.is_launchable(runner, name):
+        log(f"{name} still will not start. Try again from an Administrator terminal.")
+        return 1
+
+    log(f"{name} is responding again; checking the rest")
+    return status(runner, cfg, log)

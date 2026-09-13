@@ -5,6 +5,7 @@
     bosun shrink                   reclaim disk space from the virtual disk
     bosun down                     unregister the distro (destructive)
     bosun keepalive [on|off]       hold the distro open so the endpoint stays up
+    bosun repair                   unstick a WSL install that stopped responding
     bosun kube [status|setup]      kubectl, and a managed-cluster CLI (opt-in)
     bosun config                   print the resolved settings and exit
 
@@ -110,6 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", parents=[common], help="report what works and what does not")
 
+    sub.add_parser("repair", parents=[common], help="unstick a WSL install that stopped responding")
+
     p_down = sub.add_parser("down", parents=[common], help="unregister the distro (destructive)")
     p_down.add_argument("--context", help="client context to remove alongside the distro")
     p_down.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
@@ -177,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "keepalive":
             action = "supervise" if args.supervise else args.action
             return flows.keepalive(runner, cfg, _log, action, distro_name=args.distro)
+        if args.command == "repair":
+            return flows.repair(runner, cfg, _log)
         if args.command == "kube":
             return flows.kube(runner, cfg, _log, args.action)
         if args.command == "config":
