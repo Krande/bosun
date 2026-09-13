@@ -53,7 +53,7 @@ def up(
             f"systemd is enabled in /etc/wsl.conf but is not PID 1 in {name!r}. "
             "Run 'wsl --shutdown', wait a few seconds, then re-run 'bosun up'. "
             "If it persists, the WSL version may predate systemd support "
-            "(needs 0.67.6 or newer — check with 'wsl --version')."
+            "(needs 0.67.6 or newer - check with 'wsl --version')."
         )
 
     provision.ensure_engine(wsl, cfg, spec, log)
@@ -169,7 +169,7 @@ def down(
 def status(runner: Runner, cfg: Config, log: Logger) -> int:
     """Report the health of the setup. Exit 0 when every required check passes."""
     spec = engines.get(cfg.engine_name)
-    log(f"bosun status — distro {cfg.distro_name!r}, engine {spec.name!r}")
+    log(f"bosun status - distro {cfg.distro_name!r}, engine {spec.name!r}")
     log("")
     checks = diagnose.run_checks(runner, cfg, spec)
     log(diagnose.render(checks))
@@ -320,7 +320,7 @@ def kube(runner: Runner, cfg: Config, log: Logger, action: str) -> int:
 
     tools = kube_mod.ProviderTools(wsl, cfg, provider, log)
     ready = tools.installed()
-    log(f"provider: {provider.title} — {provider.cli} {'installed' if ready else 'NOT installed'}")
+    log(f"provider: {provider.title} - {provider.cli} {'installed' if ready else 'NOT installed'}")
     missing = tools.missing_tools() if ready else list(provider.extra_tools)
     if missing:
         log(f"  missing: {', '.join(missing)}")

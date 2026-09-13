@@ -142,7 +142,7 @@ def get(name: str) -> EngineSpec:
     spec = ENGINES.get(name.strip().lower())
     if spec is None:
         known = ", ".join(sorted(ENGINES))
-        raise UnsupportedEngine(f"unknown engine {name!r} — bosun knows: {known}")
+        raise UnsupportedEngine(f"unknown engine {name!r} - bosun knows: {known}")
     if not spec.implemented:
         raise UnsupportedEngine(
             f"engine {spec.name!r} is not implemented yet; bosun currently provisions "

@@ -138,3 +138,48 @@ def test_markers_are_distinct():
 def test_healthy_ignores_optional_failures():
     assert diagnose.healthy([Check("a", True), Check("b", False, required=False)])
     assert not diagnose.healthy([Check("a", True), Check("b", False)])
+
+
+# ── output that survives a legacy console ──────────────────────────────────
+
+
+def test_no_runtime_string_carries_a_character_cp1252_cannot_encode():
+    """Windows gives stdout cp1252 whenever output is piped.
+
+    The status markers already fall back to ASCII, but an em-dash in any other
+    log line degrades to a replacement character in the same situation, which
+    looked like corruption in real output. Docstrings and comments are exempt —
+    they are never printed.
+    """
+    import ast
+    import pathlib
+
+    emitters = {
+        "log",
+        "print",
+        "warn",
+        "note",
+        "info",
+        "BosunError",
+        "UnsupportedProvider",
+        "UnsupportedEngine",
+        "ConfigError",
+    }
+    offenders = []
+
+    for path in sorted(pathlib.Path(diagnose.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name not in emitters:
+                continue
+            for arg in ast.walk(node):
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    try:
+                        arg.value.encode("cp1252")
+                    except UnicodeEncodeError:
+                        offenders.append(f"{path.name}:{arg.lineno}")
+
+    assert not offenders, f"non-cp1252 characters in printed strings: {offenders}"

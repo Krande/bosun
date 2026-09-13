@@ -279,12 +279,12 @@ def validate(data: dict) -> None:
     expose = data["engine"]["expose"]
     if expose not in EXPOSE_MODES:
         raise ConfigError(
-            f"[engine].expose must be one of {', '.join(EXPOSE_MODES)} — got {expose!r}"
+            f"[engine].expose must be one of {', '.join(EXPOSE_MODES)} - got {expose!r}"
         )
     for key in ("port", "tls_port"):
         port = data["engine"][key]
         if not isinstance(port, int) or not (1 <= port <= 65535):
-            raise ConfigError(f"[engine].{key} must be a port number 1-65535 — got {port!r}")
+            raise ConfigError(f"[engine].{key} must be a port number 1-65535 - got {port!r}")
     if not str(data["distro"].get("name") or "").strip():
         raise ConfigError("[distro].name must not be empty")
     if not str(data["client"].get("context") or "").strip():

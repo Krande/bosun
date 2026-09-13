@@ -125,6 +125,6 @@ def compact(runner: Runner, path: pathlib.Path, log: Callable[[str], None]) -> N
     if not res.ok or "DiskPart successfully compacted" not in output:
         raise BosunError(
             "diskpart did not report a successful compaction. It needs an "
-            "elevated prompt — re-run bosun from an Administrator terminal.\n\n"
+            "elevated prompt - re-run bosun from an Administrator terminal.\n\n"
             f"{output.strip()}"
         )

@@ -108,7 +108,7 @@ def ensure_context(
     if not cfg.client.get("manage_context", True):
         return True
     if cfg.expose == "unix":
-        log("expose = unix — nothing to reach from Windows, skipping the context")
+        log("expose = unix - nothing to reach from Windows, skipping the context")
         return True
     if not have(spec.host_cli):
         _print_manual_instructions(cfg, spec, log, cert_dir)
@@ -165,7 +165,7 @@ def _print_manual_instructions(
         ]
     log(
         f"{spec.host_cli} is not on PATH, so the context was not created.\n"
-        f"    The engine inside the distro is ready — reach it with "
+        f"    The engine inside the distro is ready - reach it with "
         f"'wsl -d {cfg.distro_name} {spec.name} info'.\n"
         f"    Once a client is installed, run:\n"
         f"      {spec.host_cli} context create {cfg.context} --docker {','.join(parts)}\n"

@@ -60,7 +60,7 @@ class Recovery:
         """Bounce the WSL service. Needs elevation, so it is skipped without it."""
         if not self.is_elevated():
             self.log(
-                f"skipping the {LXSS_SERVICE} restart — it needs an Administrator terminal. "
+                f"skipping the {LXSS_SERVICE} restart - it needs an Administrator terminal. "
                 "The steps above fix most cases; re-run elevated if this one did not."
             )
             return False

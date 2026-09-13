@@ -110,7 +110,7 @@ def get(name: str) -> Provider:
     provider = PROVIDERS.get(name.strip().lower())
     if provider is None:
         raise UnsupportedProvider(
-            f"unknown Kubernetes provider {name!r} — bosun knows: {', '.join(sorted(PROVIDERS))}"
+            f"unknown Kubernetes provider {name!r} - bosun knows: {', '.join(sorted(PROVIDERS))}"
         )
     if not provider.implemented:
         raise UnsupportedProvider(
