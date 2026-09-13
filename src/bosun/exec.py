@@ -78,6 +78,15 @@ class Runner(Protocol):
         display: str | None = None,
     ) -> Result: ...
 
+    def spawn(self, cmd: Sequence[str]) -> bool:
+        """Start a detached background process. True when it was launched.
+
+        Distinct from :meth:`run` because nothing waits for it and there is no
+        output to collect — the keep-alive supervisor outlives the bosun run
+        that started it.
+        """
+        ...
+
 
 @dataclass
 class SubprocessRunner:
@@ -113,6 +122,31 @@ class SubprocessRunner:
         except FileNotFoundError as exc:
             return Result(127, "", str(exc))
         return Result(cp.returncode, cp.stdout or "", cp.stderr or "")
+
+    def spawn(self, cmd: Sequence[str]) -> bool:
+        """Start a detached background process.
+
+        DETACHED_PROCESS so it survives this run and owns no console: the
+        supervisor is meant to outlive `bosun up` without leaving a window
+        open. The flags do not exist off Windows, hence the getattr.
+        """
+        if self.verbose:
+            print(f"  $ (detached) {' '.join(cmd)}", file=sys.stderr)
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+        try:
+            subprocess.Popen(
+                list(cmd),
+                creationflags=flags,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+        except OSError:
+            return False
+        return True
 
 
 @dataclass
@@ -166,6 +200,11 @@ class DryRunRunner:
         # The readable form, not the base64 envelope Wsl.sh wraps scripts in.
         print(f"  [dry-run] {display or ' '.join(cmd)}")
         return Result(0, "", "")
+
+    def spawn(self, cmd: Sequence[str]) -> bool:
+        self.skipped.append(list(cmd))
+        print(f"  [dry-run] (detached) {' '.join(cmd)}")
+        return True
 
 
 def is_dry_run(runner: Runner) -> bool:

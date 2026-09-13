@@ -63,3 +63,30 @@ def endpoint_reachable(monkeypatch):
     monkeypatch.setattr(
         "bosun.client.socket.create_connection", lambda *_a, **_k: _Socket(), raising=False
     )
+
+
+@pytest.fixture(autouse=True)
+def logon_registry(monkeypatch):
+    """Keep every test out of the real Windows registry.
+
+    KeepAlive defaults to the live HKCU Run key. Without this the suite would
+    install a logon item on the developer's own machine — on Linux the winreg
+    import fails and it degrades to "not registered", which is harmless but
+    also means the tests would silently exercise nothing.
+    """
+
+    class InMemoryRunKey:
+        def __init__(self):
+            self.values: dict[str, str] = {}
+
+        def get(self, name):
+            return self.values.get(name)
+
+        def set(self, name, command):
+            self.values[name] = command
+            return True
+
+        def delete(self, name):
+            return self.values.pop(name, None) is not None
+
+    monkeypatch.setattr("bosun.keepalive.WindowsRunKey", InMemoryRunKey)

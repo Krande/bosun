@@ -4,6 +4,7 @@
     bosun status                   report what works and what does not
     bosun shrink                   reclaim disk space from the virtual disk
     bosun down                     unregister the distro (destructive)
+    bosun keepalive [on|off]       hold the distro open so the endpoint stays up
     bosun config                   print the resolved settings and exit
 
 Settings resolve from three layers, most-specific first::
@@ -113,6 +114,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--clean-only", action="store_true", help="clean inside the distro; skip the compaction"
     )
 
+    p_keep = sub.add_parser(
+        "keepalive", parents=[common], help="hold the distro open so the endpoint stays up"
+    )
+    p_keep.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=("status", "on", "off"),
+        help="default: status",
+    )
+    # The logon entry's own mode. Hidden, because it is not something to run by
+    # hand: it never returns, and there is no console to stop it from.
+    p_keep.add_argument("--supervise", action="store_true", help=argparse.SUPPRESS)
+
     sub.add_parser("config", parents=[common], help="print the resolved settings and exit")
 
     return parser
@@ -141,6 +156,9 @@ def main(argv: list[str] | None = None) -> int:
             return flows.down(runner, cfg, _log, _confirm, assume_yes=args.yes)
         if args.command == "shrink":
             return flows.shrink(runner, cfg, _log, clean_only=args.clean_only, vhdx_path=args.vhdx)
+        if args.command == "keepalive":
+            action = "supervise" if args.supervise else args.action
+            return flows.keepalive(runner, cfg, _log, action, distro_name=args.distro)
         if args.command == "config":
             print(
                 json.dumps(
@@ -148,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                         "distro": cfg.distro,
                         "engine": cfg.engine,
                         "client": cfg.client,
+                        "keepalive": cfg.keepalive,
                         "tls": cfg.tls,
                         "apt": cfg.apt,
                         "vhdx": cfg.vhdx,

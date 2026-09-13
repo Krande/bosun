@@ -68,6 +68,13 @@ DEFAULTS: dict[str, Any] = {
         # `docker-compose` works, because the CLI only finds plugins there.
         "wire_plugins": True,
     },
+    "keepalive": {
+        # Hold the distro open so the endpoint keeps answering. WSL idles an
+        # instance out about a minute after its last Windows-side command, and
+        # the localhost forward dies with it — so without this, docker works
+        # right after `bosun up` and stops working shortly afterwards.
+        "enabled": True,
+    },
     "tls": {
         "dir": "/etc/docker/ssl",
         # Certificate subject. Blank fields are omitted from the DN, so the
@@ -111,6 +118,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str, str]] = {
     "BOSUN_TLS_PORT": ("engine", "tls_port", "int"),
     "BOSUN_CONTEXT": ("client", "context", "str"),
     "BOSUN_INSTALL_CLI": ("client", "install_cli", "bool"),
+    "BOSUN_KEEPALIVE": ("keepalive", "enabled", "bool"),
     "BOSUN_VHDX": ("vhdx", "path", "str"),
 }
 
@@ -178,6 +186,7 @@ class Config:
     distro: dict[str, Any] = field(default_factory=dict)
     engine: dict[str, Any] = field(default_factory=dict)
     client: dict[str, Any] = field(default_factory=dict)
+    keepalive: dict[str, Any] = field(default_factory=dict)
     tls: dict[str, Any] = field(default_factory=dict)
     apt: dict[str, Any] = field(default_factory=dict)
     vhdx: dict[str, Any] = field(default_factory=dict)
@@ -280,6 +289,7 @@ def resolve(
         distro=data["distro"],
         engine=data["engine"],
         client=data["client"],
+        keepalive=data["keepalive"],
         tls=data["tls"],
         apt=data["apt"],
         vhdx=data["vhdx"],

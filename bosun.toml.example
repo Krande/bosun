@@ -100,3 +100,13 @@ timeout = 15
 # %LOCALAPPDATA%. Set this when you have several distros and discovery reports
 # an ambiguous match.
 path = ""
+
+[keepalive]
+# Hold the distro open so the engine keeps answering from Windows.
+#
+# WSL idles an instance out about a minute after its last Windows-side command,
+# and the localhost forward dies with it — so without this, docker works right
+# after `bosun up` and stops working shortly afterwards. Every diagnostic you
+# then run wakes the distro and reports it healthy, which is what makes the
+# failure so confusing.
+enabled = true

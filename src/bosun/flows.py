@@ -12,6 +12,7 @@ import pathlib
 from collections.abc import Callable
 
 from . import client, diagnose, distro, engines, provision, tls, vhdx
+from . import keepalive as keepalive_mod
 from .config import Config
 from .exec import BosunError, Runner, Wsl
 
@@ -93,6 +94,16 @@ def up(
         # discovers in a plugins directory; installing them onto PATH is not
         # enough on its own.
         client.wire_plugins(runner, cfg, spec, log, home)
+
+    # Last, because it is what keeps everything above it true: WSL idles the
+    # instance out about a minute after the last Windows-side command, taking
+    # the endpoint with it.
+    if cfg.keepalive.get("enabled", True):
+        # dbus-launch is the one command that both satisfies WSL's idle
+        # accounting and returns immediately; a minimal image may not ship it.
+        if not wsl.ok("command -v dbus-launch", user="root", timeout=20):
+            provision.apt_install(wsl, cfg, [keepalive_mod.KEEPALIVE_PACKAGE], log, check=False)
+        keepalive_mod.KeepAlive(runner, log).enable(wsl, name)
 
     _summarise(cfg, spec, name, log)
     return 0
@@ -214,4 +225,37 @@ def shrink(
     log("")
     log(f"  {path}")
     log(f"  {before:.1f} GB -> {after:.1f} GB  (reclaimed {max(0.0, before - after):.1f} GB)")
+    return 0
+
+
+def keepalive(
+    runner: Runner,
+    cfg: Config,
+    log: Logger,
+    action: str,
+    *,
+    distro_name: str | None = None,
+) -> int:
+    """Turn the keep-alive on or off, report it, or run the supervisor."""
+    keeper = keepalive_mod.KeepAlive(runner, log)
+    name = distro_name or distro.find(runner, cfg)
+
+    if action == "supervise":
+        if name is None:
+            raise BosunError("no distro to supervise")
+        return keeper.supervise(name)
+
+    if name is None:
+        log(f"no WSL distro matching {cfg.distro_name!r} is registered")
+        return 1
+
+    wsl = Wsl(runner, name)
+    running = distro.is_launchable(runner, name)
+
+    if action == "on":
+        keeper.enable(wsl, name)
+    elif action == "off":
+        keeper.disable(wsl if running else None, name)
+
+    log(f"keep-alive: {keeper.describe(wsl, running)}")
     return 0

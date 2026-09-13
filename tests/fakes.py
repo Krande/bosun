@@ -31,6 +31,8 @@ class FakeRunner:
         self.read_flags: list[bool] = []
         # The human-readable form of each call (the script, not its envelope).
         self.displays: list[str] = []
+        # Detached background launches, recorded separately from run() calls.
+        self.spawned: list[list[str]] = []
         self.default = Result(0)
 
     def on(self, substring: str, result: Result | Callable[[str], Result]) -> FakeRunner:
@@ -66,6 +68,14 @@ class FakeRunner:
             if substring in joined:
                 return result(joined) if callable(result) else result
         return self.default
+
+    def spawn(self, cmd: Sequence[str]) -> bool:
+        self.calls.append(list(cmd))
+        self.stdins.append(None)
+        self.read_flags.append(False)
+        self.displays.append("(detached) " + " ".join(cmd))
+        self.spawned.append(list(cmd))
+        return True
 
     # ── assertions used by the tests ───────────────────────────────────────
     def ran(self, substring: str) -> bool:
