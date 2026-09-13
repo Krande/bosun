@@ -87,9 +87,9 @@ def is_launchable(runner: Runner, name: str, *, timeout: int = 25) -> bool:
 def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
     """Install the configured distro, trying each available mechanism in turn.
 
-    Three strategies, because which of them works depends on Windows edition,
-    Store availability and group policy — all of which vary across managed
-    machines in ways bosun cannot detect up front.
+    Three strategies, because which of them works varies between Windows
+    installations in ways bosun cannot detect up front: the edition, whether the
+    Store is reachable, and how the machine is provisioned all matter.
     """
     name = cfg.distro_name
 

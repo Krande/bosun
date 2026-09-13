@@ -22,8 +22,8 @@ match = "ubuntu"
 # non-interactive.
 user = ""
 
-# Install the distro when it is missing. Set false on a managed machine where
-# provisioning happens elsewhere, and `bosun up` will fail rather than install.
+# Install the distro when it is missing. Set false where the distro comes from
+# somewhere else, and `bosun up` will fail rather than install it.
 install = true
 
 # Enable systemd via /etc/wsl.conf. The engine's service unit needs it.

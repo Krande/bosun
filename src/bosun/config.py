@@ -40,7 +40,7 @@ DEFAULTS: dict[str, Any] = {
         # existing default user, else prompt. Never hardcode a person here.
         "user": "",
         # Install the distro when it is missing. False makes `up` fail instead,
-        # which is what you want on a machine where provisioning is managed.
+        # which is what you want where the distro comes from somewhere else.
         "install": True,
         # Enable systemd via /etc/wsl.conf. The engine's service unit needs it.
         "systemd": True,
