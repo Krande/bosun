@@ -11,8 +11,9 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Callable
 
-from . import client, diagnose, distro, engines, provision, tls, vhdx
+from . import client, diagnose, distro, engines, providers, provision, tls, vhdx
 from . import keepalive as keepalive_mod
+from . import kube as kube_mod
 from .config import Config
 from .exec import BosunError, Runner, Wsl
 
@@ -94,6 +95,9 @@ def up(
         # discovers in a plugins directory; installing them onto PATH is not
         # enough on its own.
         client.wire_plugins(runner, cfg, spec, log, home)
+
+    if cfg.kubernetes.get("enabled", False):
+        _install_kube(wsl, cfg, log, user)
 
     # Last, because it is what keeps everything above it true: WSL idles the
     # instance out about a minute after the last Windows-side command, taking
@@ -259,3 +263,66 @@ def keepalive(
 
     log(f"keep-alive: {keeper.describe(wsl, running)}")
     return 0
+
+
+def _install_kube(wsl: Wsl, cfg: Config, log: Logger, user: str) -> None:
+    """Install kubectl, and a provider's CLI when one is configured."""
+    kubectl = kube_mod.Kubectl(wsl, cfg, log)
+    kubectl.ensure_installed(provision.apt_install, provision.apt_update)
+
+    name = str(cfg.kubernetes.get("provider") or "").strip()
+    if not name:
+        return
+
+    provider = providers.get(name)
+    tools = kube_mod.ProviderTools(wsl, cfg, provider, log)
+    tools.ensure_installed(provision.apt_install, provision.apt_update)
+
+    missing = tools.missing_tools()
+    if missing:
+        log(
+            f"warning: {provider.title} also needs {', '.join(missing)}, which no apt "
+            "repository ships. Install it in the distro before using the cluster."
+        )
+
+    # Last: everything above ran as root, and a root-owned kubeconfig is
+    # invisible from the user's own shell.
+    tools.fix_credential_ownership(user)
+
+
+def kube(runner: Runner, cfg: Config, log: Logger, action: str) -> int:
+    """Report or install the Kubernetes tooling."""
+    name = distro.find(runner, cfg)
+    if name is None:
+        log(f"no WSL distro matching {cfg.distro_name!r} is registered")
+        return 1
+
+    wsl = Wsl(runner, name)
+    kubectl = kube_mod.Kubectl(wsl, cfg, log)
+    provider_name = str(cfg.kubernetes.get("provider") or "").strip()
+    provider = providers.get(provider_name) if provider_name else None
+
+    if action == "setup":
+        user = distro.resolve_user(wsl, cfg, prompt=False)
+        _install_kube(wsl, cfg, log, user)
+
+    installed = kubectl.installed()
+    log(
+        f"kubectl: {'installed' if installed else 'NOT installed'}"
+        + (f" ({kubectl.client_version() or 'unknown version'})" if installed else "")
+    )
+    if installed:
+        log(f"  channel: {kubectl.current_channel() or 'unknown'}")
+
+    if provider is None:
+        log("provider: none configured (kubectl only)")
+        return 0 if installed else 1
+
+    tools = kube_mod.ProviderTools(wsl, cfg, provider, log)
+    ready = tools.installed()
+    log(f"provider: {provider.title} — {provider.cli} {'installed' if ready else 'NOT installed'}")
+    missing = tools.missing_tools() if ready else list(provider.extra_tools)
+    if missing:
+        log(f"  missing: {', '.join(missing)}")
+
+    return 0 if (installed and ready and not missing) else 1

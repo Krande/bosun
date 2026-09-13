@@ -5,6 +5,7 @@
     bosun shrink                   reclaim disk space from the virtual disk
     bosun down                     unregister the distro (destructive)
     bosun keepalive [on|off]       hold the distro open so the endpoint stays up
+    bosun kube [status|setup]      kubectl, and a managed-cluster CLI (opt-in)
     bosun config                   print the resolved settings and exit
 
 Settings resolve from three layers, most-specific first::
@@ -12,8 +13,8 @@ Settings resolve from three layers, most-specific first::
     CLI flag  ->  env var (BOSUN_*)  ->  bosun.toml  ->  built-in default
 
 Env vars: BOSUN_TOML, BOSUN_DISTRO, BOSUN_USER, BOSUN_ENGINE, BOSUN_EXPOSE,
-BOSUN_HOST, BOSUN_PORT, BOSUN_TLS_PORT, BOSUN_CONTEXT, BOSUN_INSTALL_CLI,
-BOSUN_VHDX.
+BOSUN_HOST, BOSUN_PORT, BOSUN_TLS_PORT, BOSUN_CONTEXT, BOSUN_INSTALL_CLI, BOSUN_KEEPALIVE,
+BOSUN_KUBERNETES, BOSUN_KUBE_PROVIDER, BOSUN_KUBE_CHANNEL, BOSUN_VHDX.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from . import __version__, flows
 from .config import ConfigError, resolve
 from .engines import ENGINES, UnsupportedEngine
 from .exec import BosunError, DryRunRunner, SubprocessRunner
+from .providers import PROVIDERS, UnsupportedProvider
 
 
 def _log(message: str) -> None:
@@ -53,7 +55,7 @@ def _confirm(question: str) -> bool:
 
 def _overrides(args: argparse.Namespace) -> dict:
     """Turn the CLI flags into the top layer of the config stack."""
-    out: dict = {"distro": {}, "engine": {}, "client": {}}
+    out: dict = {"distro": {}, "engine": {}, "client": {}, "kubernetes": {}}
     if getattr(args, "distro", None):
         out["distro"]["name"] = args.distro
     if getattr(args, "user", None):
@@ -67,6 +69,10 @@ def _overrides(args: argparse.Namespace) -> dict:
         out["engine"][key] = args.port
     if getattr(args, "context", None):
         out["client"]["context"] = args.context
+    if getattr(args, "provider", None):
+        # Naming a provider is itself the opt-in; asking for one and being told
+        # Kubernetes is disabled would be a pointless second step.
+        out["kubernetes"] = {"provider": args.provider, "enabled": True}
     return {k: v for k, v in out.items() if v}
 
 
@@ -128,6 +134,18 @@ def build_parser() -> argparse.ArgumentParser:
     # hand: it never returns, and there is no console to stop it from.
     p_keep.add_argument("--supervise", action="store_true", help=argparse.SUPPRESS)
 
+    p_kube = sub.add_parser(
+        "kube", parents=[common], help="kubectl, and a managed-cluster CLI (opt-in)"
+    )
+    p_kube.add_argument(
+        "action", nargs="?", default="status", choices=("status", "setup"), help="default: status"
+    )
+    p_kube.add_argument(
+        "--provider",
+        choices=sorted(PROVIDERS),
+        help="managed Kubernetes provider whose CLI to install",
+    )
+
     sub.add_parser("config", parents=[common], help="print the resolved settings and exit")
 
     return parser
@@ -138,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         cfg = resolve(args.config, _overrides(args))
-    except (ConfigError, UnsupportedEngine) as exc:
+    except (ConfigError, UnsupportedEngine, UnsupportedProvider) as exc:
         print(f"bosun: {exc}", file=sys.stderr)
         return 2
 
@@ -159,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "keepalive":
             action = "supervise" if args.supervise else args.action
             return flows.keepalive(runner, cfg, _log, action, distro_name=args.distro)
+        if args.command == "kube":
+            return flows.kube(runner, cfg, _log, args.action)
         if args.command == "config":
             print(
                 json.dumps(
@@ -167,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                         "engine": cfg.engine,
                         "client": cfg.client,
                         "keepalive": cfg.keepalive,
+                        "kubernetes": cfg.kubernetes,
                         "tls": cfg.tls,
                         "apt": cfg.apt,
                         "vhdx": cfg.vhdx,
@@ -177,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
-    except (BosunError, UnsupportedEngine) as exc:
+    except (BosunError, UnsupportedEngine, UnsupportedProvider) as exc:
         print(f"\nbosun: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

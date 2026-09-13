@@ -110,3 +110,26 @@ path = ""
 # then run wakes the distro and reports it healthy, which is what makes the
 # failure so confusing.
 enabled = true
+
+[kubernetes]
+# Opt-in. A container host does not need kubectl, and adding apt repositories
+# to a machine that never asked for them is not a favour.
+enabled = false
+
+# Managed-Kubernetes provider whose CLI and credential plugin to install.
+# Empty means kubectl only, which talks to any cluster you already have a
+# kubeconfig for.
+#
+#   "azure"   Azure Kubernetes Service — installs the az CLI, and kubelogin,
+#             which an Entra-ID-integrated cluster needs because kubectl
+#             dropped its own azure auth provider in 1.26.
+#
+# "aws" and "google" are recognised names that are not wired up yet; asking for
+# one fails immediately rather than installing a CLI bosun cannot then use.
+provider = ""
+
+# pkgs.k8s.io channel, e.g. "v1.31". Empty asks dl.k8s.io what stable is.
+# There is no "latest" channel — every URL names one minor — so something has
+# to choose. Either way bosun realigns to the cluster's own minor once a
+# cluster is known, because kubectl supports only one minor of skew.
+channel = ""
