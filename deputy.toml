@@ -37,3 +37,16 @@ marker = "<!-- DEPUTY_PR_BOT -->"
 # (pyproject) and the importable __version__. semantic-release bumps both.
 version_toml = ["pyproject.toml:project.version"]
 version_variables = ["src/bosun/__init__.py:__version__"]
+
+# Merges here are squashed with the pull request body as the commit body, so a
+# release entry is a long markdown document rather than a single line. The stock
+# changelog template renders the whole commit message inside one list item,
+# which breaks the body out of the list and collides its headings with the
+# version headings — see templates/CHANGELOG.md.j2 for the replacement.
+[release.changelog]
+template_dir = "templates"
+
+[release.changelog.environment]
+# The default is true, which is right for HTML and wrong for markdown: it turns
+# every apostrophe into &#39; and every quote into &#34;.
+autoescape = false
