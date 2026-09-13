@@ -56,6 +56,10 @@ class EngineSpec:
     # packaged unit passes -H fd://, which conflicts with any "hosts" key in
     # daemon.json and makes the service refuse to start.
     exec_start: str
+    # Binaries that are docker CLI plugins rather than standalone commands.
+    # Installed on PATH by pixi, they have to be copied into the CLI's
+    # cli-plugins directory before `docker <name>` resolves them.
+    cli_plugins: tuple[str, ...] = ()
     # Sub-commands checked by `bosun status` once the engine is up.
     verify: tuple[str, ...] = field(default_factory=tuple)
     implemented: bool = True
@@ -98,8 +102,9 @@ DOCKER = EngineSpec(
     socket="/var/run/docker.sock",
     group="docker",
     host_cli="docker",
-    host_cli_packages=("docker-cli", "docker-compose"),
+    host_cli_packages=("docker-cli", "docker-compose", "docker-buildx"),
     cert_dir=".docker",
+    cli_plugins=("docker-buildx", "docker-compose"),
     exec_start="/usr/bin/dockerd --containerd=/run/containerd/containerd.sock",
     verify=("buildx version", "compose version"),
 )

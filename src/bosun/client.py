@@ -9,12 +9,14 @@ by something else.
 
 from __future__ import annotations
 
+import json
 import pathlib
+import shutil
 from collections.abc import Callable
 
 from .config import Config
 from .engines import EngineSpec
-from .exec import Runner, have
+from .exec import Runner, have, is_dry_run
 
 
 def ensure_cli(runner: Runner, cfg: Config, spec: EngineSpec, log: Callable[[str], None]) -> bool:
@@ -163,3 +165,82 @@ def remove_context(
     log(f"removing context {cfg.context!r}")
     runner.run([spec.host_cli, "context", "use", "default"], timeout=60)
     runner.run([spec.host_cli, "context", "rm", "-f", cfg.context], timeout=60)
+
+
+# ── CLI plugins ────────────────────────────────────────────────────────────
+#
+# `docker compose` and `docker buildx` are not subcommands of the docker CLI;
+# they are separate executables the CLI discovers in a cli-plugins directory.
+# pixi installs them onto PATH as standalone commands, which makes
+# `docker-compose` work and `docker compose` fail with "unknown command" — on
+# every machine bosun sets up, since bosun is what installs them.
+#
+# Copied rather than symlinked: a symlink on Windows needs Developer Mode or an
+# elevated prompt, and failing the whole run over a convenience wiring would be
+# a poor trade.
+
+PLUGIN_HANDSHAKE = "docker-cli-plugin-metadata"
+
+
+def plugin_dir(home: pathlib.Path | None = None) -> pathlib.Path:
+    """Where the docker CLI looks for plugins."""
+    return (home or pathlib.Path.home()) / ".docker" / "cli-plugins"
+
+
+def is_plugin(runner: Runner, binary: str) -> bool:
+    """True when ``binary`` answers the CLI plugin handshake.
+
+    Checked rather than assumed. A binary that merely happens to be named
+    docker-something is not necessarily a plugin, and installing a
+    non-conforming one makes every later docker command print a warning. This
+    is also what keeps bosun from adopting an unrelated executable that was
+    already on PATH.
+    """
+    res = runner.run([binary, PLUGIN_HANDSHAKE], timeout=30, read_only=True)
+    if not res.ok:
+        return False
+    try:
+        meta = json.loads(res.out)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(meta, dict) and "SchemaVersion" in meta
+
+
+def wire_plugins(
+    runner: Runner,
+    cfg: Config,
+    spec: EngineSpec,
+    log: Callable[[str], None],
+    home: pathlib.Path | None = None,
+) -> list[str]:
+    """Copy the engine's CLI plugins into place. Returns the names wired."""
+    if not cfg.client.get("wire_plugins", True) or not spec.cli_plugins:
+        return []
+
+    dest_dir = plugin_dir(home)
+    wired: list[str] = []
+
+    for name in spec.cli_plugins:
+        source = shutil.which(name)
+        if source is None:
+            continue
+        if not is_plugin(runner, name):
+            log(f"warning: {name} is on PATH but does not answer the plugin handshake; skipping")
+            continue
+
+        src = pathlib.Path(source)
+        dest = dest_dir / src.name
+        if dest.exists() and dest.stat().st_size == src.stat().st_size:
+            continue
+
+        if is_dry_run(runner):
+            log(f"  [dry-run] would copy {src} -> {dest}")
+            wired.append(name)
+            continue
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        log(f"wired {name} as a docker CLI plugin")
+        wired.append(name)
+
+    return wired

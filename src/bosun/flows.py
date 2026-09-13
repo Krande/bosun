@@ -76,6 +76,10 @@ def up(
 
     if client.ensure_cli(runner, cfg, spec, log):
         client.ensure_context(runner, cfg, spec, log, cert_dir)
+        # `docker compose` / `docker buildx` are separate executables the CLI
+        # discovers in a plugins directory; installing them onto PATH is not
+        # enough on its own.
+        client.wire_plugins(runner, cfg, spec, log, home)
 
     _summarise(cfg, spec, name, log)
     return 0

@@ -63,6 +63,10 @@ DEFAULTS: dict[str, Any] = {
         # Install the host-side CLI when missing.
         "install_cli": True,
         "installer": "pixi",
+        # Copy docker CLI plugins (compose, buildx) into ~/.docker/cli-plugins.
+        # Without this `docker compose` fails with "unknown command" even though
+        # `docker-compose` works, because the CLI only finds plugins there.
+        "wire_plugins": True,
     },
     "tls": {
         "dir": "/etc/docker/ssl",

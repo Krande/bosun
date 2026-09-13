@@ -56,6 +56,12 @@ manage_context = true
 install_cli = true
 installer = "pixi"
 
+# Copy docker CLI plugins (compose, buildx) into ~/.docker/cli-plugins.
+# `docker compose` and `docker buildx` are separate executables the CLI looks
+# for there; an installer that only puts them on PATH gives you a working
+# `docker-compose` and a `docker compose` that errors with "unknown command".
+wire_plugins = true
+
 [tls]
 # Only read when [engine].expose = "tls".
 dir = "/etc/docker/ssl"
