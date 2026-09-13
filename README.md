@@ -65,6 +65,7 @@ bosun up --user dev --no-prompt
 | `bosun up` | Provision the distro into a working container host. Safe to re-run. |
 | `bosun status` | Report what works and what does not. Changes nothing. |
 | `bosun shrink` | Reclaim disk space from the distro's virtual disk. |
+| `bosun keepalive` | Hold the distro open so the endpoint keeps answering. |
 | `bosun down` | Unregister the distro. Destructive; asks first. |
 | `bosun config` | Print the resolved settings and exit. |
 
@@ -95,6 +96,52 @@ Run 'bosun up' to repair, or 'bosun up --verbose' to see each step.
 
 (It falls back to `+`/`x` markers when the console can't encode the glyphs,
 which on Windows is any time you pipe the output.)
+
+### `bosun keepalive`
+
+The one that stops `docker` mysteriously dying.
+
+WSL idles an instance out about a minute after its last Windows-side command,
+and the localhost forward to the engine dies with it. So `docker` works right
+after `bosun up` and then stops — and every command you run to investigate
+wakes the distro back up and reports everything healthy, which is what makes it
+so confusing.
+
+`bosun up` turns this on by default. To inspect or change it:
+
+```console
+$ bosun keepalive
+keep-alive: armed, supervised, re-armed at logon
+
+$ bosun keepalive off     # release it; WSL idles the distro out in ~a minute
+$ bosun keepalive on      # hold it again, now and after every logon
+```
+
+It holds the distro by running `dbus-launch` through `wsl.exe` — the one
+command that both satisfies WSL's idle accounting and returns immediately.
+Most of the obvious alternatives simply do not work:
+
+| Attempt | Result |
+| --- | --- |
+| `.wslconfig` `[experimental] vmIdleTimeout` | unknown key |
+| `.wslconfig` `[wsl2] vmIdleTimeout=-1` | no effect |
+| a systemd unit running `sleep infinity` | no effect |
+| `wsl.conf` `[boot] command=dbus-launch true` | no effect |
+| `wsl.exe --exec dbus-launch true` from Windows | **works** |
+
+`vmIdleTimeout` cannot help by construction — it governs the virtual machine,
+whose timer only starts once every instance has already terminated. WSL counts
+only processes created by a Windows-side `wsl.exe` invocation; anything started
+inside the instance is ignored ([microsoft/WSL#13416](https://github.com/microsoft/WSL/issues/13416),
+fine on 2.5.10, broken from 2.6.1 on).
+
+A small supervisor keeps watch and re-arms after a `wsl --shutdown`, registered
+as an HKCU `Run` value — no administrator rights, and Task Manager lists it
+under Startup apps, so bosun is not the only way to see or stop it. It logs to
+`%LOCALAPPDATA%\bosun-keepalive.log`.
+
+Turn it off with `[keepalive] enabled = false` if you would rather manage it
+yourself.
 
 ### `bosun shrink`
 
@@ -134,7 +181,7 @@ quickest way to find out why something isn't taking effect.
 
 Env vars: `BOSUN_TOML`, `BOSUN_DISTRO`, `BOSUN_USER`, `BOSUN_ENGINE`,
 `BOSUN_EXPOSE`, `BOSUN_HOST`, `BOSUN_PORT`, `BOSUN_TLS_PORT`, `BOSUN_CONTEXT`,
-`BOSUN_INSTALL_CLI`, `BOSUN_VHDX`.
+`BOSUN_INSTALL_CLI`, `BOSUN_KEEPALIVE`, `BOSUN_VHDX`.
 
 ## Exposure modes
 
