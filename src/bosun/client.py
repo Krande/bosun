@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import pathlib
 import shutil
+import socket
 from collections.abc import Callable
 
 from .config import Config
@@ -45,6 +46,29 @@ def ensure_cli(runner: Runner, cfg: Config, spec: EngineSpec, log: Callable[[str
     if not res.ok:
         log(f"warning: {installer} could not install the client: {res.stderr.strip()}")
     return have(spec.host_cli)
+
+
+def endpoint_reachable(cfg: Config, timeout: float = 5.0) -> bool:
+    """True when the engine's TCP endpoint answers *from Windows*.
+
+    Deliberately checked from this side rather than inside the distro. WSL
+    relays Windows localhost to the distro, and the relay does not always pick
+    up a listener that started while the distro was still booting — which is
+    exactly what happens when systemd starts the engine at boot. The daemon is
+    then listening, `ss` inside the distro confirms it, and Windows still gets
+    connection refused. A check run inside the distro reports healthy for a
+    setup that does not work.
+
+    A plain socket connect rather than the client CLI, so the answer does not
+    depend on a client being installed.
+    """
+    if cfg.expose == "unix":
+        return True
+    try:
+        with socket.create_connection((cfg.engine["host"], cfg.port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def context_exists(runner: Runner, spec: EngineSpec, name: str) -> bool:

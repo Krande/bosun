@@ -190,3 +190,60 @@ def test_vhdx_cleanup_is_never_marked_read_only():
     vhdx.reclaim_inside(wsl, DOCKER, lambda _: None)
     prune = [f for d, f in zip(runner.displays, runner.read_flags, strict=False) if "prune" in d]
     assert not any(prune)
+
+
+# ── the Windows side of the endpoint ───────────────────────────────────────
+#
+# Found on a live machine: the engine was listening inside the distro, `ss`
+# confirmed it, and Windows still got connection refused. WSL relays Windows
+# localhost into the distro, and the relay misses a listener that came up while
+# the distro was still booting — which is exactly what systemd does at boot.
+# A check run inside the distro reports healthy for a setup that does not work.
+
+
+def unreachable(monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("bosun.client.socket.create_connection", boom)
+
+
+def test_reachability_is_measured_from_windows(monkeypatch):
+    from bosun import client
+
+    assert client.endpoint_reachable(resolve()) is True
+    unreachable(monkeypatch)
+    assert client.endpoint_reachable(resolve()) is False
+
+
+def test_unix_mode_has_nothing_to_reach(monkeypatch):
+    from bosun import client
+
+    unreachable(monkeypatch)
+    cfg = resolve(overrides={"engine": {"expose": "unix"}})
+    assert client.endpoint_reachable(cfg) is True
+
+
+def test_status_fails_when_windows_cannot_reach_the_engine(monkeypatch):
+    """The check that used to pass while docker was unusable from Windows."""
+    from bosun import diagnose
+
+    unreachable(monkeypatch)
+    checks = diagnose.run_checks(healthy_machine(), resolve(), DOCKER)
+    failed = [c.name for c in checks if c.required and not c.ok]
+
+    assert "endpoint reachable from Windows" in failed
+    assert not diagnose.healthy(checks)
+
+
+def test_up_restarts_the_engine_when_windows_cannot_reach_it(monkeypatch):
+    """Restarting once the distro is fully up is what makes the relay notice."""
+    unreachable(monkeypatch)
+    runner = healthy_machine()
+    logs: list[str] = []
+
+    flows.up(runner, resolve(), logs.append, prompt=False)
+
+    assert runner.ran("systemctl restart docker")
+    assert any("not reachable from Windows" in line for line in logs)
+    assert any("warning" in line for line in logs), "must not claim success when it failed"

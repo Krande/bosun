@@ -37,3 +37,29 @@ def virtual_clock(monkeypatch):
 
     for module in ("bosun.provision", "bosun.distro", "bosun.exec"):
         monkeypatch.setattr(f"{module}.time", fake, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def endpoint_reachable(monkeypatch):
+    """Pin the Windows-side socket probe so tests never touch the network.
+
+    bosun checks the engine's endpoint with a real socket connect, because that
+    is the only way to learn what Windows actually sees. Left alone the suite
+    would dial 127.0.0.1:2375 on the developer's own machine — slow, and it
+    would pass or fail depending on whether they happen to be running docker.
+
+    Defaults to reachable. A test that cares about the failure overrides it:
+
+        monkeypatch.setattr("bosun.client.socket.create_connection", boom)
+    """
+
+    class _Socket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(
+        "bosun.client.socket.create_connection", lambda *_a, **_k: _Socket(), raising=False
+    )

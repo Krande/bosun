@@ -74,6 +74,19 @@ def up(
 
     provision.verify(wsl, spec, log)
 
+    # The engine can be listening inside the distro while Windows still cannot
+    # reach it: WSL's localhost relay misses listeners that came up during the
+    # distro's own boot. Restarting the service once the distro is fully up is
+    # what makes the relay notice — so check from the Windows side and repair.
+    if cfg.expose != "unix" and not client.endpoint_reachable(cfg):
+        log("endpoint not reachable from Windows yet; restarting the engine")
+        provision.restart_engine(wsl, spec, log)
+        if not client.endpoint_reachable(cfg):
+            log(
+                f"warning: {cfg.endpoint} is still not reachable from Windows. "
+                f"The engine is running inside {name}; try 'wsl --shutdown' and re-run."
+            )
+
     if client.ensure_cli(runner, cfg, spec, log):
         client.ensure_context(runner, cfg, spec, log, cert_dir)
         # `docker compose` / `docker buildx` are separate executables the CLI

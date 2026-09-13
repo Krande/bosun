@@ -15,8 +15,8 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
+from . import client, provision
 from . import distro as distro_mod
-from . import provision
 from .config import Config
 from .engines import EngineSpec
 from .exec import Runner, Wsl, have
@@ -112,6 +112,18 @@ def run_checks(runner: Runner, cfg: Config, spec: EngineSpec) -> list[Check]:
             timeout=20,
         )
         checks.append(Check(f"port {cfg.port} listening", listening, cfg.endpoint))
+
+        # From Windows, which is the side that has to work. WSL's localhost
+        # relay can miss a listener that started during the distro's boot, so
+        # the two checks genuinely disagree in practice.
+        reachable = client.endpoint_reachable(cfg)
+        checks.append(
+            Check(
+                "endpoint reachable from Windows",
+                reachable,
+                "" if reachable else "listening inside the distro but not relayed; re-run bosun up",
+            )
+        )
 
     cli = have(spec.host_cli)
     checks.append(Check(f"{spec.host_cli} on the Windows PATH", cli, required=False))
