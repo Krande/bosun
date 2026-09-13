@@ -52,7 +52,6 @@ class FakeRunner:
         *,
         stdin: str | None = None,
         timeout: int | None = None,
-        encoding: str | None = None,
         capture: bool = True,
         read_only: bool = False,
         display: str | None = None,

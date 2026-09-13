@@ -54,7 +54,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from .exec import Runner, Wsl
+from .exec import Runner, Wsl, command_line
 
 # dbus-launch lives here, and a minimal image does not always ship it.
 KEEPALIVE_PACKAGE = "dbus-x11"
@@ -154,15 +154,6 @@ class WindowsRunKey:
         except (OSError, ImportError):
             return False
         return True
-
-
-def quote(argument: str) -> str:
-    """Quote one argument for a Windows command line."""
-    return f'"{argument}"' if " " in argument and not argument.startswith('"') else argument
-
-
-def command_line(parts: list[str]) -> str:
-    return " ".join(quote(part) for part in parts)
 
 
 def log_path() -> pathlib.Path:

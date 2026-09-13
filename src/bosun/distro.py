@@ -28,7 +28,7 @@ from collections.abc import Callable
 
 from . import wslconf
 from .config import Config
-from .exec import WSL_LIST_ENCODING, BosunError, Result, Runner, Wsl
+from .exec import BosunError, Result, Runner, Wsl
 
 # What useradd will actually accept. Checked before the account is created,
 # because useradd's own refusal is a bare exit code and a message about an
@@ -61,22 +61,17 @@ def generate_password(length: int = 20) -> str:
 def list_distros(runner: Runner) -> list[str]:
     """Registered WSL distro names.
 
-    ``wsl.exe -l -q`` emits UTF-16-LE; decoding it as UTF-8 yields NUL-separated
-    mojibake that looks like a single unparseable name, so the encoding is
-    passed explicitly. Falls back to the verbose table when the quiet listing
+    ``wsl.exe -l -q`` emits UTF-16LE, which :func:`~bosun.exec.decode_output`
+    detects. Falls back to the verbose table when the quiet listing
     comes back empty, whose header is localised (English "NAME", Norwegian
     "NAVN", ...) and so is skipped by position rather than by matching text.
     """
-    res = runner.run(
-        ["wsl.exe", "-l", "-q"], timeout=20, encoding=WSL_LIST_ENCODING, read_only=True
-    )
+    res = runner.run(["wsl.exe", "-l", "-q"], timeout=20, read_only=True)
     names = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
     if names:
         return names
 
-    res = runner.run(
-        ["wsl.exe", "-l", "-v"], timeout=20, encoding=WSL_LIST_ENCODING, read_only=True
-    )
+    res = runner.run(["wsl.exe", "-l", "-v"], timeout=20, read_only=True)
     out: list[str] = []
     for i, line in enumerate([ln for ln in (res.stdout or "").splitlines() if ln.strip()]):
         if i == 0:  # header row, whatever language it is in
