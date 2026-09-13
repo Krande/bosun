@@ -40,7 +40,7 @@ DEFAULTS: dict[str, Any] = {
         # existing default user, else prompt. Never hardcode a person here.
         "user": "",
         # Install the distro when it is missing. False makes `up` fail instead,
-        # which is what you want on a machine where provisioning is managed.
+        # which is what you want where the distro comes from somewhere else.
         "install": True,
         # Enable systemd via /etc/wsl.conf. The engine's service unit needs it.
         "systemd": True,
@@ -63,6 +63,30 @@ DEFAULTS: dict[str, Any] = {
         # Install the host-side CLI when missing.
         "install_cli": True,
         "installer": "pixi",
+        # Copy docker CLI plugins (compose, buildx) into ~/.docker/cli-plugins.
+        # Without this `docker compose` fails with "unknown command" even though
+        # `docker-compose` works, because the CLI only finds plugins there.
+        "wire_plugins": True,
+    },
+    "keepalive": {
+        # Hold the distro open so the endpoint keeps answering. WSL idles an
+        # instance out about a minute after its last Windows-side command, and
+        # the localhost forward dies with it — so without this, docker works
+        # right after `bosun up` and stops working shortly afterwards.
+        "enabled": True,
+    },
+    "kubernetes": {
+        # Opt-in. A container host does not need kubectl, and installing apt
+        # repositories on a machine that never asked for them is not a favour.
+        "enabled": False,
+        # Managed-Kubernetes provider whose CLI and credential plugin to
+        # install. Empty means kubectl only, which talks to any cluster you
+        # already have a kubeconfig for. See bosun/providers.py.
+        "provider": "",
+        # pkgs.k8s.io channel, e.g. "v1.31". Empty asks dl.k8s.io what stable
+        # is. Either way it is realigned to the cluster's own minor once a
+        # cluster is known — kubectl supports only one minor of skew.
+        "channel": "",
     },
     "tls": {
         "dir": "/etc/docker/ssl",
@@ -107,6 +131,10 @@ ENV_OVERRIDES: dict[str, tuple[str, str, str]] = {
     "BOSUN_TLS_PORT": ("engine", "tls_port", "int"),
     "BOSUN_CONTEXT": ("client", "context", "str"),
     "BOSUN_INSTALL_CLI": ("client", "install_cli", "bool"),
+    "BOSUN_KEEPALIVE": ("keepalive", "enabled", "bool"),
+    "BOSUN_KUBERNETES": ("kubernetes", "enabled", "bool"),
+    "BOSUN_KUBE_PROVIDER": ("kubernetes", "provider", "str"),
+    "BOSUN_KUBE_CHANNEL": ("kubernetes", "channel", "str"),
     "BOSUN_VHDX": ("vhdx", "path", "str"),
 }
 
@@ -174,6 +202,8 @@ class Config:
     distro: dict[str, Any] = field(default_factory=dict)
     engine: dict[str, Any] = field(default_factory=dict)
     client: dict[str, Any] = field(default_factory=dict)
+    keepalive: dict[str, Any] = field(default_factory=dict)
+    kubernetes: dict[str, Any] = field(default_factory=dict)
     tls: dict[str, Any] = field(default_factory=dict)
     apt: dict[str, Any] = field(default_factory=dict)
     vhdx: dict[str, Any] = field(default_factory=dict)
@@ -249,16 +279,24 @@ def validate(data: dict) -> None:
     expose = data["engine"]["expose"]
     if expose not in EXPOSE_MODES:
         raise ConfigError(
-            f"[engine].expose must be one of {', '.join(EXPOSE_MODES)} — got {expose!r}"
+            f"[engine].expose must be one of {', '.join(EXPOSE_MODES)} - got {expose!r}"
         )
     for key in ("port", "tls_port"):
         port = data["engine"][key]
         if not isinstance(port, int) or not (1 <= port <= 65535):
-            raise ConfigError(f"[engine].{key} must be a port number 1-65535 — got {port!r}")
+            raise ConfigError(f"[engine].{key} must be a port number 1-65535 - got {port!r}")
     if not str(data["distro"].get("name") or "").strip():
         raise ConfigError("[distro].name must not be empty")
     if not str(data["client"].get("context") or "").strip():
         raise ConfigError("[client].context must not be empty")
+
+    # Checked here so a typo fails before anything is installed, rather than
+    # after three apt repositories have been added.
+    provider = str(data["kubernetes"].get("provider") or "").strip()
+    if provider:
+        from .providers import get as get_provider
+
+        get_provider(provider)
 
 
 def resolve(
@@ -276,6 +314,8 @@ def resolve(
         distro=data["distro"],
         engine=data["engine"],
         client=data["client"],
+        keepalive=data["keepalive"],
+        kubernetes=data["kubernetes"],
         tls=data["tls"],
         apt=data["apt"],
         vhdx=data["vhdx"],

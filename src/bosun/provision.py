@@ -15,40 +15,82 @@ from .config import Config
 from .engines import EngineSpec
 from .exec import BosunError, Wsl
 
-# Processes that hold the apt/dpkg locks. An install that starts while one of
-# these is mid-run fails with a lock error that reads like a bosun bug.
-LOCK_HOLDERS = ("apt", "apt-get", "dpkg", "unattended-upgrade", "snapd")
+# What apt and dpkg print when another process holds the lock.
+#
+# Matched after the fact rather than probed for beforehand, because there is no
+# reliable way to ask "is apt busy?" from outside the operation:
+#
+#   * dpkg takes fcntl locks. `flock -n` reports the lock FREE while dpkg holds
+#     it — verified on a live distro — because flock and fcntl locks do not
+#     interact on Linux. So the obvious pre-flight check silently always passes.
+#   * `fuser` does observe them, but lives in psmisc, which a minimal image need
+#     not carry.
+#   * Probing process names matches long-lived daemons that never hold the lock
+#     at all. `pgrep -f '(apt|...|snapd)'` matches snapd and every snapfuse
+#     mount, both of which run permanently — so the wait never ended early and
+#     every run burned its full patience window before forcing a dpkg repair
+#     that nothing had asked for.
+#
+# All three are also races: apt can take the lock between the check and the run.
+# Running the command and reading the failure is the only signal that is both
+# accurate and free of assumptions about how the lock is implemented.
+LOCK_MARKERS = (
+    "could not get lock",
+    "unable to acquire the dpkg frontend lock",
+    "is another process using it",
+    "temporarily unavailable",
+    "waiting for cache lock",
+)
 
 
-def wait_for_apt(wsl: Wsl, log: Callable[[str], None], *, patience: int = 60) -> None:
-    """Wait for apt/dpkg locks to clear, then force the issue if they don't.
+def is_lock_error(res) -> bool:
+    """True when a failed apt run failed because something else held the lock."""
+    blob = f"{res.stdout}\n{res.stderr}".lower()
+    return any(marker in blob for marker in LOCK_MARKERS)
 
-    Fresh WSL distros routinely run unattended-upgrades on first boot, so this
-    is the normal case rather than an edge case. After ``patience`` seconds the
-    upgrade is stopped and any interrupted dpkg state is repaired, because
-    waiting indefinitely on a background job nobody asked for is worse than
-    pre-empting it.
+
+def run_apt(
+    wsl: Wsl,
+    script: str,
+    log: Callable[[str], None],
+    *,
+    attempts: int = 6,
+    delay: int = 10,
+    timeout: int = 1800,
+):
+    """Run an apt command, retrying while another process holds the lock.
+
+    A fresh WSL distro routinely runs unattended-upgrades on first boot, so
+    contention is the normal case rather than an edge case. Failures that are
+    not lock contention return immediately — retrying a broken mirror six times
+    just delays the error by a minute.
+
+    Once the retries are exhausted the background upgrade is stopped and any
+    interrupted dpkg state is repaired, because waiting indefinitely on a job
+    nobody asked for is worse than pre-empting it.
     """
-    pattern = "|".join(LOCK_HOLDERS)
-    deadline = time.monotonic() + patience
-    while time.monotonic() < deadline:
-        busy = wsl.sh(f"pgrep -f '({pattern})' >/dev/null", user="root", timeout=15).ok
-        if not busy:
-            return
-        log("waiting for apt locks to clear")
-        time.sleep(3)
+    res = None
+    for attempt in range(1, attempts + 1):
+        res = wsl.sh(script, user="root", timeout=timeout)
+        if res.ok or not is_lock_error(res):
+            return res
+        if attempt < attempts:
+            log(f"apt lock held by another process; retrying in {delay}s ({attempt}/{attempts})")
+            time.sleep(delay)
 
-    log("apt still busy; stopping unattended-upgrades and repairing dpkg state")
+    log("apt still locked; stopping unattended-upgrades and repairing dpkg state")
     wsl.sh("systemctl stop unattended-upgrades.service", user="root", timeout=60)
     wsl.sh("DEBIAN_FRONTEND=noninteractive dpkg --configure -a", user="root", timeout=300)
+    return wsl.sh(script, user="root", timeout=timeout)
 
 
 def apt_update(wsl: Wsl, cfg: Config, log: Callable[[str], None]) -> None:
     flags = " ".join(cfg.apt_flags())
     log("apt update")
-    res = wsl.sh(
+    res = run_apt(
+        wsl,
         f"DEBIAN_FRONTEND=noninteractive apt-get {flags} update -y",
-        user="root",
+        log,
         timeout=600,
     )
     if not res.ok:
@@ -70,11 +112,11 @@ def apt_install(
     flags = " ".join(cfg.apt_flags())
     names = " ".join(packages)
     log(f"apt install {names}")
-    res = wsl.sh(
+    res = run_apt(
+        wsl,
         f"DEBIAN_FRONTEND=noninteractive apt-get {flags} install -y "
         f"--no-install-recommends {names}",
-        user="root",
-        timeout=1800,
+        log,
     )
     if not res.ok and check:
         raise BosunError(f"failed to install {names}:\n{res.stderr.strip()}")
@@ -136,7 +178,6 @@ def ensure_engine(wsl: Wsl, cfg: Config, spec: EngineSpec, log: Callable[[str], 
         log(f"{spec.name} already installed")
         return
 
-    wait_for_apt(wsl, log)
     apt_update(wsl, cfg, log)
 
     log(f"installing {spec.name} from the distro repositories")
@@ -188,21 +229,86 @@ def configure_daemon(wsl: Wsl, cfg: Config, spec: EngineSpec, log: Callable[[str
     if wsl.read_file(override_path).strip() != want_override.strip():
         log("writing the systemd drop-in")
         wsl.sh(f"mkdir -p {override_dir}", user="root", timeout=15)
-        wsl.write_file(override_path, want_override, mode="0644")
-        wsl.sh("systemctl daemon-reload", user="root", timeout=60)
+        # Checked, unlike before: a failed write here left the packaged unit's
+        # -H fd:// in place, so the engine kept refusing to start while bosun
+        # reported the repair as done.
+        res = wsl.write_file(override_path, want_override, mode="0644")
+        if not res.ok:
+            raise BosunError(
+                f"could not write {override_path}: {res.stderr.strip() or res.returncode}"
+            )
+        reload_res = wsl.sh("systemctl daemon-reload", user="root", timeout=60)
+        if not reload_res.ok:
+            raise BosunError(f"systemctl daemon-reload failed: {reload_res.stderr.strip()}")
         changed = True
 
     return changed
 
 
+def stray_daemons(wsl: Wsl, spec: EngineSpec) -> list[str]:
+    """PIDs of engine daemons systemd does not own.
+
+    A daemon started by hand — ``nohup dockerd &``, which is exactly what the
+    script bosun replaces fell back to — keeps holding the socket and the TCP
+    port while ``systemctl status`` cheerfully reports the service as failed.
+    The restart then fails with an address-in-use error that looks nothing like
+    its actual cause, so these have to be found and stopped first.
+    """
+    main_pid = wsl.sh(
+        f"systemctl show {spec.service} -p MainPID --value",
+        user="root",
+        timeout=20,
+        read_only=True,
+    ).out
+    listed = wsl.sh(f"pgrep -x {spec.daemon}", user="root", timeout=20, read_only=True)
+    if not listed.ok:
+        return []
+    return [pid for pid in listed.out.split() if pid and pid != main_pid]
+
+
+def stop_stray_daemons(wsl: Wsl, spec: EngineSpec, log: Callable[[str], None]) -> bool:
+    """Stop any hand-started daemon. Returns True when one was stopped.
+
+    Containers it is running will stop with it. There is no way to hand them
+    over to systemd's daemon, so the caller is expected to have warned first.
+    """
+    pids = stray_daemons(wsl, spec)
+    if not pids:
+        return False
+
+    log(f"stopping {spec.daemon} started outside systemd (pid {', '.join(pids)})")
+    wsl.sh(f"kill {' '.join(pids)}", user="root", timeout=30)
+
+    for _ in range(10):
+        if not stray_daemons(wsl, spec):
+            return True
+        time.sleep(2)
+
+    remaining = stray_daemons(wsl, spec)
+    if remaining:
+        log(f"{spec.daemon} did not exit; sending SIGKILL")
+        wsl.sh(f"kill -9 {' '.join(remaining)}", user="root", timeout=30)
+        time.sleep(2)
+    return True
+
+
 def restart_engine(wsl: Wsl, spec: EngineSpec, log: Callable[[str], None]) -> None:
     """Restart the engine and wait for its API to answer."""
+    # Before systemd's daemon can bind, anything already holding the socket has
+    # to let go — see stop_stray_daemons.
+    stop_stray_daemons(wsl, spec, log)
+
     log(f"restarting {spec.service}")
     wsl.sh(f"systemctl enable {spec.service}", user="root", timeout=90)
     res = wsl.sh(f"systemctl restart {spec.service}", user="root", timeout=180)
     if not res.ok:
         # The daemon's own journal says why; systemctl's exit code does not.
-        journal = wsl.sh(f"journalctl -u {spec.service} -n 30 --no-pager", user="root", timeout=60)
+        journal = wsl.sh(
+            f"journalctl -u {spec.service} -n 30 --no-pager",
+            user="root",
+            timeout=60,
+            read_only=True,
+        )
         raise BosunError(
             f"{spec.service} failed to start:\n{res.stderr.strip()}\n\n"
             f"--- last journal lines ---\n{journal.stdout.strip()}"
@@ -231,6 +337,6 @@ def wait_for_engine(
 def verify(wsl: Wsl, spec: EngineSpec, log: Callable[[str], None]) -> None:
     """Report the versions of the engine's bundled sub-commands."""
     for sub in spec.verify:
-        res = wsl.sh(f"{spec.name} {sub}", user="root", timeout=30)
+        res = wsl.sh(f"{spec.name} {sub}", user="root", timeout=30, read_only=True)
         label = f"{spec.name} {sub}"
         log(f"  {label}: {res.out.splitlines()[0] if res.ok and res.out else 'unavailable'}")

@@ -20,29 +20,58 @@ which is for the human's later convenience and is never needed by bosun itself.
 from __future__ import annotations
 
 import getpass
+import re
+import secrets
+import string
 import time
 from collections.abc import Callable
 
 from . import wslconf
 from .config import Config
-from .exec import WSL_LIST_ENCODING, BosunError, Result, Runner, Wsl
+from .exec import BosunError, Result, Runner, Wsl
+
+# What useradd will actually accept. Checked before the account is created,
+# because useradd's own refusal is a bare exit code and a message about an
+# "invalid user name" that does not say which rule was broken.
+VALID_USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def validate_username(username: str) -> str:
+    """Return ``username`` if Linux will accept it, else explain why not."""
+    candidate = (username or "").strip()
+    if not VALID_USERNAME.match(candidate):
+        raise BosunError(
+            f"{candidate!r} is not a valid Linux username: lowercase letters, digits, "
+            "'-' and '_', starting with a letter or underscore, at most 32 characters."
+        )
+    return candidate
+
+
+def generate_password(length: int = 20) -> str:
+    """A password for an account nobody asked to choose one for.
+
+    Used when a new account has to be created with no console to prompt at. A
+    sudo-capable account with no password at all is worse: it cannot be used
+    interactively later, and the failure shows up long after this run.
+    """
+    alphabet = string.ascii_letters + string.digits + "!@#%^*-_=+"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def list_distros(runner: Runner) -> list[str]:
     """Registered WSL distro names.
 
-    ``wsl.exe -l -q`` emits UTF-16-LE; decoding it as UTF-8 yields NUL-separated
-    mojibake that looks like a single unparseable name, so the encoding is
-    passed explicitly. Falls back to the verbose table when the quiet listing
+    ``wsl.exe -l -q`` emits UTF-16LE, which :func:`~bosun.exec.decode_output`
+    detects. Falls back to the verbose table when the quiet listing
     comes back empty, whose header is localised (English "NAME", Norwegian
     "NAVN", ...) and so is skipped by position rather than by matching text.
     """
-    res = runner.run(["wsl.exe", "-l", "-q"], timeout=20, encoding=WSL_LIST_ENCODING)
+    res = runner.run(["wsl.exe", "-l", "-q"], timeout=20, read_only=True)
     names = [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
     if names:
         return names
 
-    res = runner.run(["wsl.exe", "-l", "-v"], timeout=20, encoding=WSL_LIST_ENCODING)
+    res = runner.run(["wsl.exe", "-l", "-v"], timeout=20, read_only=True)
     out: list[str] = []
     for i, line in enumerate([ln for ln in (res.stdout or "").splitlines() if ln.strip()]):
         if i == 0:  # header row, whatever language it is in
@@ -75,15 +104,17 @@ def is_launchable(runner: Runner, name: str, *, timeout: int = 25) -> bool:
     Checked instead of trusting the listing: a distro can appear in ``wsl -l``
     while still unpacking, and every later step would fail confusingly.
     """
-    return runner.run(["wsl.exe", "-d", name, "-u", "root", "--", "true"], timeout=timeout).ok
+    return runner.run(
+        ["wsl.exe", "-d", name, "-u", "root", "--", "true"], timeout=timeout, read_only=True
+    ).ok
 
 
 def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
     """Install the configured distro, trying each available mechanism in turn.
 
-    Three strategies, because which of them works depends on Windows edition,
-    Store availability and group policy — all of which vary across managed
-    machines in ways bosun cannot detect up front.
+    Three strategies, because which of them works varies between Windows
+    installations in ways bosun cannot detect up front: the edition, whether the
+    Store is reachable, and how the machine is provisioned all matter.
     """
     name = cfg.distro_name
 
@@ -93,7 +124,7 @@ def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
         return
 
     log(f"wsl --install failed ({res.stderr.strip() or res.returncode}); trying winget")
-    if runner.run(["winget", "--version"], timeout=30).ok:
+    if runner.run(["winget", "--version"], timeout=30, read_only=True).ok:
         pkg = _winget_id(name)
         # winget exits non-zero when the package is already installed, so its
         # exit code cannot distinguish success from failure here; the
@@ -133,7 +164,7 @@ def register(runner: Runner, name: str, log: Callable[[str], None]) -> None:
     on stdin that nobody is watching.
     """
     for launcher in ("ubuntu2404.exe", "ubuntu2204.exe", "ubuntu.exe"):
-        if runner.run(["where", launcher], timeout=10).ok:
+        if runner.run(["where", launcher], timeout=10, read_only=True).ok:
             log(f"registering via {launcher}")
             runner.run([launcher, "install", "--root"], timeout=1800)
             return
@@ -167,7 +198,7 @@ def ensure_ready(runner: Runner, cfg: Config, log: Callable[[str], None]) -> str
 
 def current_user(wsl: Wsl) -> str | None:
     """The distro's current default login user, if it has one."""
-    res = wsl.sh("whoami", timeout=15)
+    res = wsl.sh("whoami", timeout=15, read_only=True)
     name = res.out
     return name if res.ok and name and name != "root" else None
 
@@ -181,11 +212,11 @@ def resolve_user(wsl: Wsl, cfg: Config, *, prompt: bool = True) -> str:
     baked into a config that gets committed.
     """
     if cfg.user:
-        return cfg.user
+        return validate_username(cfg.user)
 
     existing = current_user(wsl)
     if existing:
-        return existing
+        return existing  # already created; Linux accepted it once already
 
     if not prompt:
         raise BosunError(
@@ -193,10 +224,17 @@ def resolve_user(wsl: Wsl, cfg: Config, *, prompt: bool = True) -> str:
             "pass --user, or set BOSUN_USER."
         )
 
-    entered = input("Linux username to create: ").strip()
+    try:
+        entered = input("Linux username to create: ").strip()
+    except (EOFError, KeyboardInterrupt) as exc:
+        # No console to prompt at — a scheduled run, or stdin redirected.
+        raise BosunError(
+            "no Linux username configured and no console to ask at. Set [distro].user "
+            "in bosun.toml, pass --user, or set BOSUN_USER."
+        ) from exc
     if not entered:
         raise BosunError("a Linux username is required")
-    return entered
+    return validate_username(entered)
 
 
 def ensure_user(wsl: Wsl, user: str, log: Callable[[str], None], *, prompt: bool = True) -> None:
@@ -227,13 +265,19 @@ def _set_password(wsl: Wsl, user: str, log: Callable[[str], None]) -> None:
     appears in a process listing or a shell history inside the distro.
     """
     try:
-        pw = getpass.getpass(f"Password for new Linux user {user} (blank to skip): ")
+        pw = getpass.getpass(f"Password for new Linux user {user} (blank to generate one): ")
     except (EOFError, KeyboardInterrupt):
+        # No console to prompt at. Generating beats leaving the account without
+        # one: a sudo-capable account with no password cannot be used
+        # interactively later, and that surfaces long after this run.
         print()
-        return
+        pw = generate_password()
+        log(f"no console for a password prompt; generated one for {user}")
+        log(f"  set your own with: wsl -d <distro> -u root passwd {user}")
     if not pw:
-        log(f"no password set for {user} — set one later with: wsl -u root passwd {user}")
-        return
+        pw = generate_password()
+        log(f"generated a password for {user}")
+        log(f"  set your own with: wsl -d <distro> -u root passwd {user}")
     res = wsl.sh("chpasswd", user="root", stdin=f"{user}:{pw}\n", timeout=30)
     if not res.ok:
         log(f"warning: could not set password for {user}: {res.stderr.strip()}")
@@ -279,7 +323,7 @@ def configure_wsl_conf(wsl: Wsl, cfg: Config, user: str, log: Callable[[str], No
 
 def systemd_active(wsl: Wsl) -> bool:
     """True when systemd is PID 1 inside the distro."""
-    res = wsl.sh("ps -p 1 -o comm=", user="root", timeout=15)
+    res = wsl.sh("ps -p 1 -o comm=", user="root", timeout=15, read_only=True)
     return res.ok and res.out == "systemd"
 
 

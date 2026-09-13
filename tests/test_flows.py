@@ -189,8 +189,7 @@ def test_status_changes_nothing():
     """A diagnostic that mutates the machine is not a diagnostic."""
     runner = healthy_machine()
     flows.status(runner, resolve(), lambda _: None)
-    for call in runner.calls:
-        joined = " ".join(call)
+    for joined in runner.displays:
         for forbidden in ("apt-get", "systemctl restart", "usermod", "--unregister", "--shutdown"):
             assert forbidden not in joined
 
@@ -215,7 +214,8 @@ def test_shrink_trims_before_compacting():
     runner = healthy_machine()
     runner.out("diskpart", "DiskPart successfully compacted the virtual disk file")
     flows.shrink(runner, resolve(overrides={"vhdx": {"path": __file__}}), lambda _: None)
-    order = [" ".join(c) for c in runner.calls]
+    # displays, not calls: Wsl.sh base64-encodes scripts on the way out.
+    order = runner.displays
     assert next(i for i, c in enumerate(order) if "fstrim" in c) < next(
         i for i, c in enumerate(order) if "diskpart" in c
     )

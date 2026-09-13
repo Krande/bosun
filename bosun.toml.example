@@ -22,8 +22,8 @@ match = "ubuntu"
 # non-interactive.
 user = ""
 
-# Install the distro when it is missing. Set false on a managed machine where
-# provisioning happens elsewhere, and `bosun up` will fail rather than install.
+# Install the distro when it is missing. Set false where the distro comes from
+# somewhere else, and `bosun up` will fail rather than install it.
 install = true
 
 # Enable systemd via /etc/wsl.conf. The engine's service unit needs it.
@@ -55,6 +55,12 @@ manage_context = true
 # Install the host-side CLI when it is missing, using `installer`.
 install_cli = true
 installer = "pixi"
+
+# Copy docker CLI plugins (compose, buildx) into ~/.docker/cli-plugins.
+# `docker compose` and `docker buildx` are separate executables the CLI looks
+# for there; an installer that only puts them on PATH gives you a working
+# `docker-compose` and a `docker compose` that errors with "unknown command".
+wire_plugins = true
 
 [tls]
 # Only read when [engine].expose = "tls".
@@ -94,3 +100,36 @@ timeout = 15
 # %LOCALAPPDATA%. Set this when you have several distros and discovery reports
 # an ambiguous match.
 path = ""
+
+[keepalive]
+# Hold the distro open so the engine keeps answering from Windows.
+#
+# WSL idles an instance out about a minute after its last Windows-side command,
+# and the localhost forward dies with it — so without this, docker works right
+# after `bosun up` and stops working shortly afterwards. Every diagnostic you
+# then run wakes the distro and reports it healthy, which is what makes the
+# failure so confusing.
+enabled = true
+
+[kubernetes]
+# Opt-in. A container host does not need kubectl, and adding apt repositories
+# to a machine that never asked for them is not a favour.
+enabled = false
+
+# Managed-Kubernetes provider whose CLI and credential plugin to install.
+# Empty means kubectl only, which talks to any cluster you already have a
+# kubeconfig for.
+#
+#   "azure"   Azure Kubernetes Service — installs the az CLI, and kubelogin,
+#             which an Entra-ID-integrated cluster needs because kubectl
+#             dropped its own azure auth provider in 1.26.
+#
+# "aws" and "google" are recognised names that are not wired up yet; asking for
+# one fails immediately rather than installing a CLI bosun cannot then use.
+provider = ""
+
+# pkgs.k8s.io channel, e.g. "v1.31". Empty asks dl.k8s.io what stable is.
+# There is no "latest" channel — every URL names one minor — so something has
+# to choose. Either way bosun realigns to the cluster's own minor once a
+# cluster is known, because kubectl supports only one minor of skew.
+channel = ""

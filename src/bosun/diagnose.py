@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
+from . import client, provision
 from . import distro as distro_mod
 from .config import Config
 from .engines import EngineSpec
@@ -56,10 +57,10 @@ def run_checks(runner: Runner, cfg: Config, spec: EngineSpec) -> list[Check]:
     systemd = distro_mod.systemd_active(wsl)
     checks.append(Check("systemd is PID 1", systemd, "" if systemd else "set [boot] systemd=true"))
 
-    installed = wsl.sh(f"command -v {spec.name}", user="root", timeout=15)
+    installed = wsl.sh(f"command -v {spec.name}", user="root", timeout=15, read_only=True)
     checks.append(Check(f"{spec.name} installed", installed.ok, installed.out))
 
-    active = wsl.sh(f"systemctl is-active {spec.service}", user="root", timeout=20)
+    active = wsl.sh(f"systemctl is-active {spec.service}", user="root", timeout=20, read_only=True)
     checks.append(Check(f"{spec.service} service active", active.out == "active", active.out))
 
     if user:
@@ -76,6 +77,17 @@ def run_checks(runner: Runner, cfg: Config, spec: EngineSpec) -> list[Check]:
 
     api = wsl.ok(f"{spec.name} info", user="root", timeout=25)
     checks.append(Check(f"{spec.name} API responds", api))
+
+    # Reported explicitly because the combination is so confusing otherwise: the
+    # API answers, so the engine looks fine, while the service reports failed.
+    strays = provision.stray_daemons(wsl, spec)
+    checks.append(
+        Check(
+            f"{spec.daemon} owned by systemd",
+            not strays,
+            "" if not strays else f"pid {', '.join(strays)} started outside systemd",
+        )
+    )
 
     daemon_cfg = wsl.read_file(spec.daemon_json)
     checks.append(
@@ -101,16 +113,32 @@ def run_checks(runner: Runner, cfg: Config, spec: EngineSpec) -> list[Check]:
         )
         checks.append(Check(f"port {cfg.port} listening", listening, cfg.endpoint))
 
+        # From Windows, which is the side that has to work. WSL's localhost
+        # relay can miss a listener that started during the distro's boot, so
+        # the two checks genuinely disagree in practice.
+        reachable = client.endpoint_reachable(cfg)
+        checks.append(
+            Check(
+                "endpoint reachable from Windows",
+                reachable,
+                "" if reachable else "listening inside the distro but not relayed; re-run bosun up",
+            )
+        )
+
     cli = have(spec.host_cli)
     checks.append(Check(f"{spec.host_cli} on the Windows PATH", cli, required=False))
 
     if cli and cfg.expose != "unix":
-        ctx = runner.run([spec.host_cli, "context", "ls", "--format", "{{.Name}}"], timeout=60)
+        ctx = runner.run(
+            [spec.host_cli, "context", "ls", "--format", "{{.Name}}"], timeout=60, read_only=True
+        )
         names = {ln.strip() for ln in ctx.stdout.splitlines() if ln.strip()}
         checks.append(
             Check(f"context {cfg.context!r} exists", cfg.context in names, required=False)
         )
-        reachable = runner.run([spec.host_cli, "--context", cfg.context, "info"], timeout=60).ok
+        reachable = runner.run(
+            [spec.host_cli, "--context", cfg.context, "info"], timeout=60, read_only=True
+        ).ok
         checks.append(Check("Windows client reaches the engine", reachable, required=False))
 
     # Surfaced last because it explains a failure above rather than being one.
