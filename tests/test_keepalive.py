@@ -9,6 +9,9 @@ or drops the brackets from the pgrep pattern, these fail.
 
 from __future__ import annotations
 
+import pathlib
+import sys
+
 import pytest
 
 from bosun import flows
@@ -105,10 +108,20 @@ def test_disarm_does_not_stop_the_distro():
 
 def test_the_logon_entry_runs_an_interpreter_not_a_script():
     """A launcher the shell has to interpret can be unavailable, and a hidden
-    one that fails has nowhere to report it."""
+    one that fails has nowhere to report it.
+
+    Asserted against the running interpreter rather than a filename pattern:
+    the executable is `python3.14` on a Linux CI runner and `pythonw.exe` on a
+    Windows desktop, and the point is neither of those spellings — it is that
+    the entry invokes an interpreter with a module, not a script file.
+    """
     cmd = keeper().supervisor_command("Ubuntu-24.04")
-    assert cmd[0].endswith(("python.exe", "pythonw.exe", "python", "pythonw"))
-    assert not any(part.endswith((".vbs", ".cmd", ".bat")) for part in cmd)
+    interpreter = pathlib.Path(cmd[0])
+
+    assert interpreter.parent == pathlib.Path(sys.executable).parent
+    assert interpreter.stem.startswith("python")
+    assert "-m" in cmd, "runs a module, so there is no script file to be blocked"
+    assert not any(part.endswith((".vbs", ".cmd", ".bat", ".ps1")) for part in cmd)
 
 
 def test_the_logon_entry_names_the_distro():
