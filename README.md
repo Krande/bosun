@@ -66,6 +66,8 @@ bosun up --user dev --no-prompt
 | `bosun status` | Report what works and what does not. Changes nothing. |
 | `bosun shrink` | Reclaim disk space from the distro's virtual disk. |
 | `bosun keepalive` | Hold the distro open so the endpoint keeps answering. |
+| `bosun repair` | Unstick a WSL install that stopped responding. Never deletes a distro. |
+| `bosun kube` | kubectl, and a managed-cluster CLI. Opt-in. |
 | `bosun down` | Unregister the distro. Destructive; asks first. |
 | `bosun config` | Print the resolved settings and exit. |
 
@@ -155,6 +157,53 @@ compaction reclaims only blocks the filesystem has already released.
 
 Compaction needs an **elevated prompt** — `diskpart` can't attach the disk
 otherwise. `--clean-only` does just the in-distro half and needs no elevation.
+
+### `bosun kube`
+
+Off by default — a container host does not need kubectl, and adding apt
+repositories to a machine that never asked for them is not a favour.
+
+```toml
+[kubernetes]
+enabled = true
+provider = "azure"     # or "" for kubectl only
+```
+
+Or `bosun kube setup --provider azure`, or `BOSUN_KUBERNETES=1
+BOSUN_KUBE_PROVIDER=azure`.
+
+`kubectl` is provider-neutral and talks to any cluster you have a kubeconfig
+for. Everything cloud-specific — the CLI, its apt source, its credential plugin
+— lives in a provider table, and the install logic names no cloud at all.
+Azure is implemented; `aws` and `google` are recognised names that fail
+immediately rather than installing a CLI bosun cannot then use.
+
+Two things it handles that are easy to get wrong:
+
+- **There is no "latest" channel.** Every `pkgs.k8s.io` URL names one minor, so
+  a channel has to be chosen before the apt source can even be written.
+- **Version skew.** kubectl supports one minor either side of the API server,
+  and managed offerings deliberately trail upstream stable — so a fresh install
+  from the stable channel is out of skew against a real cluster more often than
+  not. bosun re-points the repository at the cluster's own minor once a cluster
+  is known.
+
+Installs run as root, then the credential directories are handed back to your
+Linux user. A root-owned `~/.kube/config` is invisible from the shell you type
+in, and you get *"connection to the server localhost:8080 was refused"* while a
+perfectly good kubeconfig sits in root's home.
+
+### `bosun repair`
+
+For when `wsl.exe` hangs, or a distro will neither start nor stop, and `bosun
+up` can't get far enough to fix anything. It shuts WSL down, clears the
+host-side processes that outlive the shutdown, then bounces the WSL service
+(that last step needs an elevated prompt and is skipped without one), and
+re-runs the status checks.
+
+It will **not** unregister a distro or touch Windows features. Both destroy a
+filesystem, and a command called `repair` shouldn't do that behind your back —
+`bosun down` is where that lives, behind a confirmation.
 
 ## Configuration
 
