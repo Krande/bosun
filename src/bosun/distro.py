@@ -109,6 +109,31 @@ def is_launchable(runner: Runner, name: str, *, timeout: int = 25) -> bool:
     ).ok
 
 
+# wsl.exe does not stop at installing: it then launches the new distro so its
+# first-boot wizard can ask for a username and password. Nothing is watching
+# that wizard during a bosun run, and wsl --install does not return until it is
+# answered, so the install hangs indefinitely on an unattended machine. The
+# flag suppresses the launch; bosun creates the account itself afterwards.
+NO_LAUNCH = "--no-launch"
+
+# Downloading and unpacking a distro image is slow on a cold network.
+INSTALL_TIMEOUT = 1800
+
+
+def _wsl_install(runner: Runner, name: str) -> Result:
+    """``wsl --install`` with the interactive first-run wizard suppressed.
+
+    ``--no-launch`` needs WSL 2.0 or newer. Older wsl.exe rejects the command
+    line and quotes the offending option back, which is the only signal worth
+    retrying on — any other failure is a real one and the caller's fallbacks
+    should handle it rather than a second attempt that hangs.
+    """
+    res = runner.run(["wsl.exe", "--install", "-d", name, NO_LAUNCH], timeout=INSTALL_TIMEOUT)
+    if not res.ok and NO_LAUNCH in res.combined:
+        res = runner.run(["wsl.exe", "--install", "-d", name], timeout=INSTALL_TIMEOUT)
+    return res
+
+
 def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
     """Install the configured distro, trying each available mechanism in turn.
 
@@ -119,7 +144,7 @@ def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
     name = cfg.distro_name
 
     log(f"installing {name} (this can take several minutes)")
-    res = runner.run(["wsl.exe", "--install", "-d", name], timeout=1800)
+    res = _wsl_install(runner, name)
     if res.ok:
         return
 
@@ -139,7 +164,7 @@ def install(runner: Runner, cfg: Config, log: Callable[[str], None]) -> None:
                 "--accept-package-agreements",
                 "--accept-source-agreements",
             ],
-            timeout=1800,
+            timeout=INSTALL_TIMEOUT,
         )
         return
 
@@ -155,19 +180,42 @@ def _winget_id(distro_name: str) -> str:
     return f"Canonical.Ubuntu.{digits}" if digits else "Canonical.Ubuntu"
 
 
-def register(runner: Runner, name: str, log: Callable[[str], None]) -> None:
-    """Run the distro's launcher once to unpack its filesystem.
+def _launchers(distro_name: str) -> list[str]:
+    """Candidate launcher executables for a distro, most specific first.
 
-    An installed-but-unregistered distro has no filesystem yet. ``install
-    --root`` performs that first-run unpack without the interactive
-    username/password wizard, which would otherwise block bosun forever waiting
-    on stdin that nobody is watching.
+    Derived from the distro name rather than listed, because the launcher is
+    named after the release it ships (``Ubuntu-24.04`` -> ``ubuntu2404.exe``)
+    and a hard-coded list goes stale with every new one.
     """
-    for launcher in ("ubuntu2404.exe", "ubuntu2204.exe", "ubuntu.exe"):
+    base = "".join(ch for ch in distro_name.split("-")[0] if ch.isalnum()).lower()
+    digits = "".join(ch for ch in distro_name if ch.isdigit())
+    names = [f"{base}{digits}.exe"] if digits else []
+    names.append(f"{base}.exe")
+    return names
+
+
+def register(runner: Runner, name: str, log: Callable[[str], None]) -> None:
+    """Give an installed-but-unregistered distro a filesystem, wizard-free.
+
+    Reached when the install left an image with nothing unpacked yet — the
+    winget path does that, and so does an install interrupted part way.
+
+    wsl.exe is asked first because recent WSL releases ship a distro as a
+    plain archive and install no launcher executable at all, so there may be
+    nothing to call. The launcher is the fallback: its ``install --root`` does
+    the same first-run unpack without the username/password wizard, which
+    would otherwise block on stdin that nobody is watching.
+    """
+    if _wsl_install(runner, name).ok:
+        return
+
+    for launcher in _launchers(name):
         if runner.run(["where", launcher], timeout=10, read_only=True).ok:
             log(f"registering via {launcher}")
-            runner.run([launcher, "install", "--root"], timeout=1800)
+            runner.run([launcher, "install", "--root"], timeout=INSTALL_TIMEOUT)
             return
+
+    log(f"no launcher found for {name}; it may need one manual start before bosun can use it")
 
 
 def ensure_ready(runner: Runner, cfg: Config, log: Callable[[str], None]) -> str:

@@ -45,6 +45,7 @@ Three runners ship here:
 from __future__ import annotations
 
 import base64
+import contextlib
 import itertools
 import os
 import shutil
@@ -215,6 +216,38 @@ class Runner(Protocol):
         ...
 
 
+# How long to spend collecting a killed child's output before giving up on it.
+KILL_GRACE = 10
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """End a child *and everything it started*.
+
+    ``Popen.kill`` reaches only the direct child. Some of the commands bosun
+    runs hand their work to helper processes that inherited this call's stdout
+    and stderr pipes, so killing the parent alone leaves those pipes held open
+    and the read that follows blocks on them — a timeout that never expires.
+    Killing the tree closes them.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=KILL_GRACE,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass  # fall through to the single-process kill
+
+    with contextlib.suppress(OSError):
+        proc.kill()
+
+
 @dataclass
 class SubprocessRunner:
     """The real adapter. Echoes each command when ``verbose``."""
@@ -238,18 +271,15 @@ class SubprocessRunner:
         payload = stdin.encode("utf-8") if stdin is not None else None
 
         try:
-            cp = subprocess.run(
+            proc = subprocess.Popen(
                 list(cmd),
-                input=payload,
                 # Closed stdin when nothing is being fed in. wsl.exe asks the
                 # user to press a key in some states; with stdin inherited that
                 # blocks until the timeout fires, so a prompt nobody can see
                 # becomes a multi-second stall. Closed stdin fails it fast.
-                stdin=None if payload is not None else subprocess.DEVNULL,
+                stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE if capture else None,
                 stderr=subprocess.PIPE if capture else None,
-                timeout=timeout,
-                check=False,
                 # Output is piped, so no window is wanted — and the keep-alive
                 # supervisor runs under pythonw.exe with no console to inherit,
                 # so without this Windows pops a fresh black one for every poll,
@@ -257,21 +287,32 @@ class SubprocessRunner:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
 
-        except subprocess.TimeoutExpired as exc:
+        except FileNotFoundError as exc:
+            return Result(127, "", str(exc))
+
+        try:
+            out, err = proc.communicate(payload, timeout=timeout)
+
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            # Collecting the output written before the kill, but never waiting
+            # on it indefinitely: if something still holds the pipe the timeout
+            # has to expire regardless, which is the whole point of this branch.
+            try:
+                out, err = proc.communicate(timeout=KILL_GRACE)
+            except subprocess.TimeoutExpired:
+                out, err = None, None
             return Result(
                 124,
-                decode_output(exc.stdout if isinstance(exc.stdout, bytes) else None),
+                decode_output(out),
                 f"timed out after {timeout}s: {' '.join(cmd)}",
                 timed_out=True,
             )
 
-        except FileNotFoundError as exc:
-            return Result(127, "", str(exc))
-
         return Result(
-            cp.returncode,
-            decode_output(cp.stdout),
-            decode_output(cp.stderr),
+            proc.returncode,
+            decode_output(out),
+            decode_output(err),
         )
 
     def spawn(self, cmd: Sequence[str]) -> bool:
