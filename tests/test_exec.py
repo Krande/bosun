@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
+
+from bosun import exec as bosun_exec
 from bosun import tls
 from bosun.config import resolve
 from bosun.engines import DOCKER
-from bosun.exec import DryRunRunner, Result, Wsl, command_line, decode_output
+from bosun.exec import DryRunRunner, Result, SubprocessRunner, Wsl, command_line, decode_output
 from fakes import FakeRunner
 
 
@@ -255,6 +258,82 @@ def test_combined_covers_both_streams():
 def test_a_timeout_is_not_ok_even_with_a_zero_return_code():
     assert Result(0, timed_out=True).ok is False
     assert Result(0).ok is True
+
+
+# ── timeouts ───────────────────────────────────────────────────────────────
+
+
+class StubProc:
+    """A child that never finishes on its own, to drive the timeout path."""
+
+    def __init__(self, *, outlives_kill: bool = False) -> None:
+        self.pid = 4242
+        self.returncode = None
+        self.killed = False
+        self.outlives_kill = outlives_kill
+        self.reads = 0
+
+    def communicate(self, payload=None, timeout=None):
+        self.reads += 1
+        if self.reads == 1 or self.outlives_kill:
+            raise subprocess.TimeoutExpired("cmd", timeout)
+        return b"partial", b""
+
+    def kill(self):
+        self.killed = True
+
+
+def test_a_timeout_ends_the_process_tree_and_keeps_what_was_written(monkeypatch):
+    ended = []
+    proc = StubProc()
+    monkeypatch.setattr(bosun_exec.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(bosun_exec, "kill_tree", ended.append)
+
+    res = SubprocessRunner().run(["wsl.exe", "--install", "-d", "Ubuntu-24.04"], timeout=1)
+
+    assert res.timed_out and res.returncode == 124
+    assert ended == [proc]
+    assert res.stdout == "partial"
+
+
+def test_a_child_that_outlives_the_kill_still_times_out(monkeypatch):
+    """Something may still hold the pipes; collecting output must not wait on it.
+
+    subprocess.run's own timeout handling re-reads the pipes with no timeout
+    after killing the child, so a surviving grandchild turned a bounded wait
+    into an indefinite one — the timeout that could never expire."""
+    monkeypatch.setattr(
+        bosun_exec.subprocess, "Popen", lambda *a, **k: StubProc(outlives_kill=True)
+    )
+    monkeypatch.setattr(bosun_exec, "kill_tree", lambda _proc: None)
+
+    res = SubprocessRunner().run(["wsl.exe", "--install"], timeout=1)
+
+    assert res.timed_out
+    assert "timed out after 1s" in res.stderr
+
+
+def test_kill_tree_ends_descendants_on_windows(monkeypatch):
+    """A helper process that inherited the pipes keeps them open after the
+    direct child dies, so the whole tree has to go."""
+    seen = []
+    proc = StubProc()
+    monkeypatch.setattr(bosun_exec.os, "name", "nt")
+    monkeypatch.setattr(bosun_exec.subprocess, "run", lambda cmd, **k: seen.append(cmd))
+
+    bosun_exec.kill_tree(proc)
+
+    assert seen == [["taskkill", "/F", "/T", "/PID", "4242"]]
+    assert not proc.killed
+
+
+def test_kill_tree_falls_back_to_the_child_alone(monkeypatch):
+    proc = StubProc()
+    monkeypatch.setattr(bosun_exec.os, "name", "posix")
+
+    bosun_exec.kill_tree(proc)
+
+    assert proc.killed
 
 
 # ── Windows command lines ──────────────────────────────────────────────────

@@ -82,6 +82,60 @@ def test_ensure_ready_explains_an_unstartable_distro():
         distro.ensure_ready(runner, resolve(), lambda _: None)
 
 
+def test_install_suppresses_the_first_run_wizard():
+    """Without --no-launch, wsl.exe opens a setup wizard and never returns."""
+    runner = FakeRunner()
+    distro.install(runner, resolve(), lambda _: None)
+    assert runner.ran("wsl.exe --install -d Ubuntu-24.04 --no-launch")
+    assert not runner.ran("winget")
+
+
+def test_install_retries_without_no_launch_on_older_wsl():
+    """Pre-2.0 wsl.exe rejects the flag; the plain form is still worth a try."""
+    runner = FakeRunner().fail("--no-launch", stderr="Invalid command line option: --no-launch")
+    distro.install(runner, resolve(), lambda _: None)
+    assert runner.displays == [
+        "wsl.exe --install -d Ubuntu-24.04 --no-launch",
+        "wsl.exe --install -d Ubuntu-24.04",
+    ]
+    assert not runner.ran("winget")
+
+
+def test_install_does_not_retry_a_genuine_failure():
+    """Any other failure falls through to winget rather than launching a wizard."""
+    runner = FakeRunner().fail("wsl.exe --install", stderr="no internet connection")
+    distro.install(runner, resolve(), lambda _: None)
+    assert runner.count("wsl.exe --install") == 1
+    assert runner.ran("winget install")
+
+
+def test_register_prefers_wsl_over_a_launcher():
+    """Recent WSL ships distros as archives and installs no launcher at all."""
+    runner = FakeRunner()
+    distro.register(runner, "Ubuntu-24.04", lambda _: None)
+    assert runner.ran("--no-launch")
+    assert not runner.ran("where ")
+
+
+def test_register_falls_back_to_the_launcher():
+    runner = FakeRunner().fail("wsl.exe --install", stderr="no such distribution")
+    distro.register(runner, "Ubuntu-24.04", lambda _: None)
+    assert runner.ran("where ubuntu2404.exe")
+    assert runner.ran("ubuntu2404.exe install --root")
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("Ubuntu-24.04", ["ubuntu2404.exe", "ubuntu.exe"]),
+        ("Ubuntu", ["ubuntu.exe"]),
+        ("Debian-13", ["debian13.exe", "debian.exe"]),
+    ],
+)
+def test_launcher_names_follow_the_distro(name, expected):
+    assert distro._launchers(name) == expected
+
+
 @pytest.mark.parametrize(
     "name,expected",
     [
