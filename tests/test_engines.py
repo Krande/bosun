@@ -37,6 +37,18 @@ def test_exec_start_does_not_carry_the_conflicting_flag():
     assert "fd://" not in engines.DOCKER.exec_start
 
 
+def test_docker_distro_packages_use_ubuntu_names():
+    """The *-plugin names exist only in Docker's repo; apt rejects the whole install."""
+    pkgs = engines.DOCKER.distro_packages
+    assert "docker-buildx" in pkgs and "docker-compose-v2" in pkgs
+    assert not any(p.endswith("-plugin") for p in pkgs)
+
+
+def test_upstream_install_purges_the_distro_plugins_it_replaces():
+    for pkg in ("docker.io", "docker-buildx", "docker-compose-v2"):
+        assert pkg in engines.DOCKER.conflicts
+
+
 def test_every_spec_declares_the_fields_the_flows_read():
     for spec in engines.ENGINES.values():
         assert spec.service and spec.socket and spec.group

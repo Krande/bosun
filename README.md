@@ -16,14 +16,14 @@ failure modes are genuinely confusing if you haven't hit them before.
 ```console
 $ bosun up
 engine: docker    exposure: tcp
-distro ready: Ubuntu-24.04
+distro ready: Ubuntu-26.04
 user dev exists
 docker already installed
 /etc/docker/daemon.json already correct
 docker is responding
 
 Done.
-  distro:   Ubuntu-24.04
+  distro:   Ubuntu-26.04
   engine:   docker (tcp)
   endpoint: tcp://127.0.0.1:2375
   context:  bosun
@@ -81,9 +81,9 @@ and the ones below it are consequences:
 
 ```console
 $ bosun status
-bosun status - distro 'Ubuntu-24.04', engine 'docker'
+bosun status - distro 'Ubuntu-26.04', engine 'docker'
 
-  ✓ distro registered ......................... ok  (Ubuntu-24.04)
+  ✓ distro registered ......................... ok  (Ubuntu-26.04)
   ✓ distro starts ............................. ok
   ✓ default user .............................. ok  (dev)
   ✓ systemd is PID 1 .......................... ok
@@ -113,15 +113,33 @@ so confusing.
 
 ```console
 $ bosun keepalive
-keep-alive: armed, supervised, re-armed at logon
+keep-alive: held by .wslconfig ([general] instanceIdleTimeout=-1)
 
-$ bosun keepalive off     # release it; WSL idles the distro out in ~a minute
-$ bosun keepalive on      # hold it again, now and after every logon
+$ bosun keepalive off     # remove it; takes effect after the next wsl --shutdown
+$ bosun keepalive on      # set it again
 ```
 
-It holds the distro by running `dbus-launch` through `wsl.exe` — the one
-command that both satisfies WSL's idle accounting and returns immediately.
-Most of the obvious alternatives simply do not work:
+On WSL 3.0.5 and newer this is a single setting in `%USERPROFILE%\.wslconfig`,
+which bosun adds without touching anything else in the file:
+
+```ini
+[general]
+instanceIdleTimeout=-1
+```
+
+It is read when the WSL VM starts, so `bosun up` writes it before its own WSL
+restart. Measured with nothing else holding the distro: without the setting
+the instance was stopped within 40 seconds; with it, it was still running and
+serving the engine port after four minutes. On upgrade, bosun removes the
+older supervisor and logon item described below.
+
+#### Older WSL
+
+Before that setting existed, bosun holds the distro by running `dbus-launch`
+through `wsl.exe` — the one command that both satisfies WSL's idle accounting
+and returns immediately. `bosun keepalive` then reports
+`armed, supervised, re-armed at logon`. Most of the obvious alternatives
+simply do not work:
 
 | Attempt | Result |
 | --- | --- |
@@ -132,7 +150,8 @@ Most of the obvious alternatives simply do not work:
 | `wsl.exe --exec dbus-launch true` from Windows | **works** |
 
 `vmIdleTimeout` cannot help by construction — it governs the virtual machine,
-whose timer only starts once every instance has already terminated. WSL counts
+whose timer only starts once every instance has already terminated (the
+per-instance timer is `[general] instanceIdleTimeout`, above). WSL counts
 only processes created by a Windows-side `wsl.exe` invocation; anything started
 inside the instance is ignored ([microsoft/WSL#13416](https://github.com/microsoft/WSL/issues/13416),
 fine on 2.5.10, broken from 2.6.1 on).

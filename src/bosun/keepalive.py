@@ -4,7 +4,25 @@ WSL shuts an instance down roughly a minute after it goes idle, and the
 localhost forward to the engine's port dies with it. So ``docker`` from a
 Windows shell works right after ``bosun up`` and then stops working, while
 every diagnostic you run to investigate wakes the distro and reports it
-healthy. There is no setting for this. What was measured, rather than assumed:
+healthy.
+
+Current WSL has a setting for exactly this: ``[general] instanceIdleTimeout``
+in ``%USERPROFILE%\\.wslconfig`` (milliseconds; ``-1`` never idles out). It
+governs the *instance*, unlike ``[wsl2] vmIdleTimeout`` below. Measured on WSL
+3.0.5 with the dbus keep-alive switched off, sampling every 30 s:
+
+=============================================================  ==============
+no setting                                                      stopped < 40 s
+``[general] instanceIdleTimeout=-1``                            up at 246 s
+=============================================================  ==============
+
+So on a WSL that has it, bosun writes that one key and runs nothing else: no
+supervisor, no logon item, no dbus. It is read when the VM starts, so it takes
+effect after ``wsl --shutdown`` — ``bosun up`` writes it before its own WSL
+restart for that reason.
+
+Everything below is the fallback for older WSL, where there was no setting.
+What was measured there, rather than assumed:
 
 =============================================================  ==============
 ``.wslconfig`` ``[experimental] vmIdleTimeout``                 unknown key
@@ -48,13 +66,77 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from . import wslconf
 from .exec import Runner, Wsl, command_line
+
+# The .wslconfig key that keeps an idle instance running. See the module doc.
+IDLE_SECTION = "general"
+IDLE_KEY = "instanceIdleTimeout"
+IDLE_NEVER = "-1"
+
+# The oldest WSL the setting has been verified on. Set from a measurement, not
+# from release notes, so it may well be lower — but a WSL that does not know
+# the key ignores it silently and the instance idles out, which is the exact
+# failure this module exists to prevent. Lower it only after re-measuring.
+IDLE_SETTING_MIN = (3, 0, 5)
+
+
+def wsl_version(runner: Runner) -> tuple[int, ...] | None:
+    """The installed WSL version, or None when it cannot be determined.
+
+    The first dotted number in ``wsl --version`` is WSL's own; the labels are
+    localised, so the number is matched rather than the text before it. Builds
+    old enough to lack ``--version`` print usage instead, which has no version
+    number in it and so correctly comes back as None.
+    """
+    res = runner.run(["wsl.exe", "--version"], timeout=30, read_only=True)
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", res.out) if res.ok else None
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def idle_setting_supported(runner: Runner) -> bool:
+    version = wsl_version(runner)
+    return version is not None and version >= IDLE_SETTING_MIN
+
+
+def wslconfig_path(home: pathlib.Path | None = None) -> pathlib.Path:
+    return (home or pathlib.Path.home()) / ".wslconfig"
+
+
+def idle_setting_present(home: pathlib.Path | None = None) -> bool:
+    path = wslconfig_path(home)
+    text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    return wslconf.get(text, IDLE_SECTION, IDLE_KEY) == IDLE_NEVER
+
+
+def write_idle_setting(
+    log: Callable[[str], None], home: pathlib.Path | None = None, *, enabled: bool = True
+) -> bool:
+    """Set (or remove) the idle timeout in .wslconfig. Returns True when changed.
+
+    Edited in place with the same section-preserving editor as wsl.conf: this
+    file also carries memory, networking and DNS settings bosun must not touch.
+    """
+    path = wslconfig_path(home)
+    current = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    if enabled:
+        wanted = wslconf.set_key(current, IDLE_SECTION, IDLE_KEY, IDLE_NEVER)
+    else:
+        wanted = wslconf.remove_key(current, IDLE_SECTION, IDLE_KEY)
+    if wanted == current or (not current and not enabled):
+        return False
+    path.write_text(wanted, encoding="utf-8")
+    verb = "set" if enabled else "removed"
+    log(f"{verb} [{IDLE_SECTION}] {IDLE_KEY}={IDLE_NEVER} in {path}")
+    return True
+
 
 # dbus-launch lives here, and a minimal image does not always ship it.
 KEEPALIVE_PACKAGE = "dbus-x11"
@@ -168,10 +250,20 @@ class KeepAlive:
     runner: Runner
     log: Callable[[str], None]
     registry: LogonRegistry | None = None
+    # Where .wslconfig lives; None is the real %USERPROFILE%. A seam for tests.
+    home: pathlib.Path | None = None
 
     def __post_init__(self) -> None:
         if self.registry is None:
             self.registry = WindowsRunKey()
+        self._uses_setting: bool | None = None
+
+    @property
+    def uses_setting(self) -> bool:
+        """True when this WSL keeps the instance up from .wslconfig alone."""
+        if self._uses_setting is None:
+            self._uses_setting = idle_setting_supported(self.runner)
+        return self._uses_setting
 
     # ── arming ────────────────────────────────────────────────────────────
     @staticmethod
@@ -339,8 +431,38 @@ class KeepAlive:
             time.sleep(ARM_EVERY)
 
     # ── orchestration ─────────────────────────────────────────────────────
-    def enable(self, wsl: Wsl, distro: str) -> None:
-        """Hold the distro open now, and again after every logon."""
+    def _retire_legacy(self, wsl: Wsl | None, distro: str | None) -> None:
+        """Remove the dbus keep-alive a pre-setting bosun left behind.
+
+        Harmless to leave running, but it is a startup item and a background
+        process doing nothing useful once .wslconfig holds the instance.
+        """
+        if self.stop_supervisor():
+            self.log("stopped the old keep-alive supervisor")
+        if self.unregister():
+            self.log(f"removed the old logon item: {LAUNCHER_NAME}")
+        if wsl is not None and distro is not None and self.is_armed(wsl):
+            self.disarm(distro)
+
+    def enable(self, wsl: Wsl, distro: str) -> bool:
+        """Hold the distro open now, and again after every logon.
+
+        Returns True when .wslconfig changed, which only takes effect after the
+        WSL VM restarts — the caller decides whether to do that.
+        """
+        if self.uses_setting:
+            changed = write_idle_setting(self.log, self.home)
+            self._retire_legacy(wsl, distro)
+            if changed:
+                self.log("keep-alive takes effect after 'wsl --shutdown'")
+            else:
+                self.log(f"keep-alive: {IDLE_KEY}={IDLE_NEVER} already set in .wslconfig")
+            return changed
+
+        self._enable_legacy(wsl, distro)
+        return False
+
+    def _enable_legacy(self, wsl: Wsl, distro: str) -> None:
         if not wsl.ok("command -v dbus-launch", user="root", timeout=20):
             self.log(
                 f"warning: dbus-launch is missing; install {KEEPALIVE_PACKAGE} in the distro, "
@@ -364,6 +486,8 @@ class KeepAlive:
         re-arms within the poll interval and the command looks like it did
         nothing.
         """
+        if self.uses_setting and write_idle_setting(self.log, self.home, enabled=False):
+            self.log("WSL will idle the distro out again after the next 'wsl --shutdown'")
         if self.stop_supervisor():
             self.log("supervisor stopped")
         if self.unregister():
@@ -378,6 +502,11 @@ class KeepAlive:
         Registering the logon item can fail, and a summary that claims
         otherwise sends you hunting for the wrong problem later.
         """
+        if self.uses_setting:
+            if idle_setting_present(self.home):
+                return f"held by .wslconfig ([{IDLE_SECTION}] {IDLE_KEY}={IDLE_NEVER})"
+            return f"NOT held - [{IDLE_SECTION}] {IDLE_KEY} is not set in .wslconfig"
+
         if wsl is None:
             held = "no distro"
         elif not running:

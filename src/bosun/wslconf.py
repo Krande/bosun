@@ -102,6 +102,24 @@ def set_key(text: str, section: str, key: str, value: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def remove_key(text: str, section: str, key: str) -> str:
+    """Return ``text`` without ``section.key``; everything else untouched.
+
+    The section header stays even when it ends up empty: removing it would
+    also take any comments a person left under it.
+    """
+    section, key_l = section.lower(), key.lower()
+    out: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        if _is_section(line):
+            current = _section_name(line)
+        elif current == section and _key_of(line) == key_l:
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n" if out else ""
+
+
 def with_systemd(text: str, enabled: bool = True) -> str:
     """Ensure ``[boot] systemd=`` reflects ``enabled``."""
     return set_key(text, "boot", "systemd", "true" if enabled else "false")

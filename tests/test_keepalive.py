@@ -254,6 +254,100 @@ def test_the_keepalive_flow_needs_a_distro():
     assert flows.keepalive(runner, resolve(), logs.append, "status") == 1
 
 
+# ── the .wslconfig setting (current WSL) ───────────────────────────────────
+
+WSL_3 = "WSL version: 3.0.5.0\nKernel version: 6.6.87.2-1\n"
+WSL_2_1 = "WSL version: 2.1.5.0\nKernel version: 5.15.146.1-2\n"
+
+
+def modern(runner=None):
+    return (runner or FakeRunner()).out("wsl.exe --version", WSL_3)
+
+
+def test_version_is_parsed_from_localised_output():
+    from bosun.keepalive import wsl_version
+
+    runner = FakeRunner().out("--version", "WSL-versjon: 3.0.5.0\nKjerneversjon: 6.6\n")
+    assert wsl_version(runner) == (3, 0, 5)
+
+
+def test_unknown_version_falls_back_to_dbus():
+    from bosun.keepalive import idle_setting_supported
+
+    assert not idle_setting_supported(FakeRunner().fail("--version"))
+    assert not idle_setting_supported(FakeRunner().out("--version", WSL_2_1))
+    assert idle_setting_supported(modern())
+
+
+def test_enable_writes_the_setting_and_nothing_else(tmp_path):
+    runner = modern()
+    keep = KeepAlive(runner, [].append, Registry(), home=tmp_path)
+    assert keep.enable(Wsl(runner, "Ubuntu-26.04"), "Ubuntu-26.04") is True
+
+    text = (tmp_path / ".wslconfig").read_text(encoding="utf-8")
+    assert "[general]" in text and "instanceIdleTimeout=-1" in text
+    assert not runner.ran("dbus-launch")
+    assert not runner.spawned, "no supervisor when the setting does the job"
+
+
+def test_enable_is_idempotent(tmp_path):
+    runner = modern()
+    keep = KeepAlive(runner, [].append, Registry(), home=tmp_path)
+    keep.enable(Wsl(runner, "Ubuntu-26.04"), "Ubuntu-26.04")
+    assert keep.enable(Wsl(runner, "Ubuntu-26.04"), "Ubuntu-26.04") is False
+
+
+def test_enable_preserves_other_wslconfig_settings(tmp_path):
+    original = "# mine\n[wsl2]\nmemory=8GB\ndnsTunneling=true\n"
+    (tmp_path / ".wslconfig").write_text(original, encoding="utf-8")
+    runner = modern()
+    KeepAlive(runner, [].append, Registry(), home=tmp_path).enable(
+        Wsl(runner, "Ubuntu-26.04"), "Ubuntu-26.04"
+    )
+    text = (tmp_path / ".wslconfig").read_text(encoding="utf-8")
+    assert text.startswith(original)
+    assert text.endswith("[general]\ninstanceIdleTimeout=-1\n")
+
+
+def test_enable_retires_the_old_supervisor(tmp_path):
+    runner = modern().out("Win32_Process", "4242\n")
+    registry = Registry({"bosun-keepalive": "x"})
+    KeepAlive(runner, [].append, registry, home=tmp_path).enable(
+        Wsl(runner, "Ubuntu-26.04"), "Ubuntu-26.04"
+    )
+    assert runner.ran("Stop-Process")
+    assert "bosun-keepalive" not in registry.values
+
+
+def test_disable_removes_only_the_setting(tmp_path):
+    (tmp_path / ".wslconfig").write_text(
+        "[wsl2]\nmemory=8GB\n[general]\ninstanceIdleTimeout=-1\n", encoding="utf-8"
+    )
+    runner = modern()
+    KeepAlive(runner, [].append, Registry(), home=tmp_path).disable(None, None)
+    text = (tmp_path / ".wslconfig").read_text(encoding="utf-8")
+    assert "instanceIdleTimeout" not in text
+    assert "memory=8GB" in text
+
+
+def test_describe_reports_the_setting(tmp_path):
+    runner = modern()
+    keep = KeepAlive(runner, [].append, Registry(), home=tmp_path)
+    assert "NOT held" in keep.describe(None, True)
+    keep.enable(Wsl(runner, "Ubuntu-26.04"), "Ubuntu-26.04")
+    assert "held by .wslconfig" in keep.describe(None, True)
+
+
+def test_up_writes_the_setting_before_restarting_wsl(monkeypatch, tmp_path):
+    """Read at VM start, so it has to share up's WSL restart to take effect."""
+    monkeypatch.setattr("bosun.client.have", lambda _n: True)
+    runner = modern(healthy_machine())
+    flows.up(runner, resolve(), lambda _: None, prompt=False, home=tmp_path)
+    assert "instanceIdleTimeout=-1" in (tmp_path / ".wslconfig").read_text(encoding="utf-8")
+    assert runner.ran("--shutdown")
+    assert not runner.ran("dbus-launch")
+
+
 def test_the_log_is_rotated_rather_than_growing(tmp_path, monkeypatch):
     log = tmp_path / "keepalive.log"
     log.write_text("x" * (65 * 1024), encoding="utf-8")
