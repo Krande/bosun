@@ -43,9 +43,15 @@ def up(
     user = distro.resolve_user(wsl, cfg, prompt=prompt)
     distro.ensure_user(wsl, user, log, prompt=prompt)
 
+    # The idle-timeout setting in .wslconfig is likewise read only when the VM
+    # starts, so on a WSL that has it, it is written here to share the restart.
+    keeper = keepalive_mod.KeepAlive(runner, log, home=home)
+    keep = cfg.keepalive.get("enabled", True)
+    idle_changed = keep and keeper.uses_setting and keepalive_mod.write_idle_setting(log, home)
+
     # wsl.conf governs systemd and the default user, and only takes effect on a
     # cold start — so it is written before anything depends on it.
-    if distro.configure_wsl_conf(wsl, cfg, user, log):
+    if distro.configure_wsl_conf(wsl, cfg, user, log) or idle_changed:
         distro.restart(wsl, runner, log)
 
     if cfg.distro.get("systemd", True) and not distro.systemd_active(wsl):
@@ -102,12 +108,15 @@ def up(
     # Last, because it is what keeps everything above it true: WSL idles the
     # instance out about a minute after the last Windows-side command, taking
     # the endpoint with it.
-    if cfg.keepalive.get("enabled", True):
-        # dbus-launch is the one command that both satisfies WSL's idle
-        # accounting and returns immediately; a minimal image may not ship it.
-        if not wsl.ok("command -v dbus-launch", user="root", timeout=20):
+    if keep:
+        # Older WSL only: dbus-launch is the one command that both satisfies
+        # WSL's idle accounting and returns immediately; a minimal image may
+        # not ship it.
+        if not keeper.uses_setting and not wsl.ok(
+            "command -v dbus-launch", user="root", timeout=20
+        ):
             provision.apt_install(wsl, cfg, [keepalive_mod.KEEPALIVE_PACKAGE], log, check=False)
-        keepalive_mod.KeepAlive(runner, log).enable(wsl, name)
+        keeper.enable(wsl, name)
 
     _summarise(cfg, spec, name, log)
     return 0

@@ -84,19 +84,58 @@ def run_apt(
     return wsl.sh(script, user="root", timeout=timeout)
 
 
+# What apt prints when an index could not be fetched. `apt-get update` treats
+# these as warnings and exits 0 — verified on a WSL distro with no working DNS,
+# where every mirror failed to resolve and the update still "succeeded". The
+# install that followed then found no candidates for anything, and the failure
+# surfaced two steps later as a misleading "distro packages insufficient".
+FETCH_FAILURE_MARKERS = (
+    "failed to fetch",
+    "some index files failed to download",
+    "temporary failure resolving",
+    "could not resolve",
+)
+
+# Failures that mean name resolution is broken rather than a mirror being down.
+DNS_MARKERS = ("temporary failure resolving", "could not resolve")
+
+DNS_HINT = (
+    "\n\nThe distro cannot resolve host names. On WSL this is usually the NAT "
+    "DNS proxy being blocked by a VPN or corporate security agent. Fixes, in "
+    "order: 'wsl --update' (recent WSL tunnels DNS through Windows by default), "
+    "or set 'dnsTunneling=true' under [wsl2] in %USERPROFILE%\\.wslconfig, then "
+    "'wsl --shutdown' and re-run bosun up."
+)
+
+
+def fetch_failed(res) -> bool:
+    """True when apt could not download one or more indexes, whatever its exit code."""
+    blob = f"{res.stdout}\n{res.stderr}".lower()
+    return any(marker in blob for marker in FETCH_FAILURE_MARKERS)
+
+
+def dns_failed(res) -> bool:
+    blob = f"{res.stdout}\n{res.stderr}".lower()
+    return any(marker in blob for marker in DNS_MARKERS)
+
+
 def apt_update(wsl: Wsl, cfg: Config, log: Callable[[str], None]) -> None:
     flags = " ".join(cfg.apt_flags())
     log("apt update")
+    # Error-Mode=any makes apt itself exit non-zero on a failed fetch; apt older
+    # than 2.1.16 ignores the unknown option, which is why the output is also
+    # checked below.
     res = run_apt(
         wsl,
-        f"DEBIAN_FRONTEND=noninteractive apt-get {flags} update -y",
+        f"DEBIAN_FRONTEND=noninteractive apt-get {flags} -o APT::Update::Error-Mode=any update -y",
         log,
         timeout=600,
     )
-    if not res.ok:
+    if not res.ok or fetch_failed(res):
+        detail = (res.stderr.strip() or res.stdout.strip()).splitlines()[-10:]
         raise BosunError(
             "apt update failed inside the distro. This is almost always DNS or a "
-            f"proxy rather than bosun:\n{res.stderr.strip()}"
+            "proxy rather than bosun:\n" + "\n".join(detail) + (DNS_HINT if dns_failed(res) else "")
         )
 
 
@@ -146,12 +185,15 @@ def add_upstream_repo(wsl: Wsl, cfg: Config, spec: EngineSpec, log: Callable[[st
     apt_install(wsl, cfg, ["ca-certificates", "curl", "gnupg"], log)
 
     res = wsl.sh(
-        f"curl -fsSL {repo.key_url} | gpg --batch --yes --dearmor -o {repo.keyring}",
+        f"set -o pipefail; curl -fsSL {repo.key_url} | gpg --batch --yes --dearmor -o {repo.keyring}",
         user="root",
         timeout=120,
     )
     if not res.ok:
-        raise BosunError(f"could not fetch the {spec.name} signing key:\n{res.stderr.strip()}")
+        raise BosunError(
+            f"could not fetch the {spec.name} signing key:\n{res.stderr.strip()}"
+            + (DNS_HINT if dns_failed(res) else "")
+        )
     wsl.sh(f"chmod a+r {repo.keyring}", user="root", timeout=15)
 
     # $ARCH and $CODENAME are left for the distro's own shell to expand, so the

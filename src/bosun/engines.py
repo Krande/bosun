@@ -70,14 +70,18 @@ class EngineSpec:
 
 DOCKER = EngineSpec(
     name="docker",
+    # Ubuntu's own names. docker-buildx-plugin / docker-compose-plugin exist only
+    # in Docker's upstream repo; asking for them here made apt reject the whole
+    # transaction, so the distro path could never succeed and every install fell
+    # through to download.docker.com.
     distro_packages=(
         "docker.io",
         "ca-certificates",
         "curl",
         "gnupg",
         "lsb-release",
-        "docker-buildx-plugin",
-        "docker-compose-plugin",
+        "docker-buildx",
+        "docker-compose-v2",
     ),
     upstream_repo=AptRepo(
         key_url="https://download.docker.com/linux/ubuntu/gpg",
@@ -95,7 +99,7 @@ DOCKER = EngineSpec(
             "docker-compose-plugin",
         ),
     ),
-    conflicts=("docker.io",),
+    conflicts=("docker.io", "docker-buildx", "docker-compose-v2"),
     service="docker",
     daemon="dockerd",
     daemon_json="/etc/docker/daemon.json",

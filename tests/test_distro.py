@@ -41,8 +41,8 @@ def test_verbose_fallback_strips_the_default_marker():
 
 
 def test_find_prefers_the_configured_name():
-    runner = FakeRunner().out("wsl.exe -l -q", "Ubuntu-22.04\nUbuntu-24.04\n")
-    assert distro.find(runner, resolve()) == "Ubuntu-24.04"
+    runner = FakeRunner().out("wsl.exe -l -q", "Ubuntu-22.04\nUbuntu-26.04\n")
+    assert distro.find(runner, resolve()) == "Ubuntu-26.04"
 
 
 def test_find_adopts_an_existing_distro_by_match():
@@ -86,7 +86,7 @@ def test_install_suppresses_the_first_run_wizard():
     """Without --no-launch, wsl.exe opens a setup wizard and never returns."""
     runner = FakeRunner()
     distro.install(runner, resolve(), lambda _: None)
-    assert runner.ran("wsl.exe --install -d Ubuntu-24.04 --no-launch")
+    assert runner.ran("wsl.exe --install -d Ubuntu-26.04 --no-launch")
     assert not runner.ran("winget")
 
 
@@ -95,8 +95,8 @@ def test_install_retries_without_no_launch_on_older_wsl():
     runner = FakeRunner().fail("--no-launch", stderr="Invalid command line option: --no-launch")
     distro.install(runner, resolve(), lambda _: None)
     assert runner.displays == [
-        "wsl.exe --install -d Ubuntu-24.04 --no-launch",
-        "wsl.exe --install -d Ubuntu-24.04",
+        "wsl.exe --install -d Ubuntu-26.04 --no-launch",
+        "wsl.exe --install -d Ubuntu-26.04",
     ]
     assert not runner.ran("winget")
 

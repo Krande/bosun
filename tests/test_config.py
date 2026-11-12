@@ -30,7 +30,7 @@ def config_file(tmp_path):
 
 def test_defaults_alone_are_a_working_config():
     cfg = resolve()
-    assert cfg.distro_name == "Ubuntu-24.04"
+    assert cfg.distro_name == "Ubuntu-26.04"
     assert cfg.engine_name == "docker"
     assert cfg.endpoint == "tcp://127.0.0.1:2375"
 
@@ -66,7 +66,7 @@ def test_flags_beat_env(config_file):
 
 def test_empty_env_var_is_ignored():
     cfg = resolve(env={"BOSUN_DISTRO": ""})
-    assert cfg.distro_name == "Ubuntu-24.04"
+    assert cfg.distro_name == "Ubuntu-26.04"
 
 
 def test_env_ints_are_cast():
@@ -86,7 +86,7 @@ def test_missing_explicit_config_file_is_an_error(tmp_path):
 
 def test_missing_default_config_file_is_fine(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert resolve().distro_name == "Ubuntu-24.04"
+    assert resolve().distro_name == "Ubuntu-26.04"
 
 
 @pytest.mark.parametrize("expose", ["ftp", "TCP ", ""])

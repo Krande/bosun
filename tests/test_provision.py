@@ -119,6 +119,35 @@ def test_apt_update_raises_with_the_underlying_message():
         provision.apt_update(wsl, resolve(), lambda _: None)
 
 
+DNS_BROKEN_BUT_EXIT_0 = Result(
+    0,
+    "",
+    "W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  "
+    "Temporary failure resolving 'archive.ubuntu.com'\n"
+    "W: Some index files failed to download. They have been ignored, or old ones used instead.",
+)
+
+
+def test_apt_update_fails_on_fetch_warnings_even_with_exit_0():
+    """apt-get update exits 0 when no mirror resolves; that must not pass as success."""
+    wsl = wsl_with("apt-get", DNS_BROKEN_BUT_EXIT_0)
+    with pytest.raises(BosunError, match="dnsTunneling"):
+        provision.apt_update(wsl, resolve(), lambda _: None)
+
+
+def test_apt_update_asks_apt_to_error_on_failed_fetches():
+    runner = FakeRunner()
+    provision.apt_update(Wsl(runner, "Ubuntu-24.04"), resolve(), lambda _: None)
+    assert runner.ran("APT::Update::Error-Mode=any")
+
+
+def test_dns_hint_is_not_shown_for_a_plain_mirror_error():
+    wsl = wsl_with("apt-get", BROKEN_MIRROR)
+    with pytest.raises(BosunError) as exc:
+        provision.apt_update(wsl, resolve(), lambda _: None)
+    assert "dnsTunneling" not in str(exc.value)
+
+
 def test_apt_install_can_fail_softly():
     """The distro-packages attempt is allowed to fail; the upstream one is not."""
     wsl = wsl_with("apt-get", BROKEN_MIRROR)

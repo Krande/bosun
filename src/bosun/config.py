@@ -31,7 +31,7 @@ DEFAULTS: dict[str, Any] = {
     "distro": {
         # The distro bosun installs and targets. Any WSL distro name works;
         # the apt-based install path assumes a Debian derivative.
-        "name": "Ubuntu-24.04",
+        "name": "Ubuntu-26.04",
         # Substring used to adopt an already-installed distro when "name" is
         # absent — so an existing Ubuntu-22.04 is reused rather than a second
         # distro being installed alongside it.

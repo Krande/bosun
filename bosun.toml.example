@@ -10,7 +10,7 @@
 
 [distro]
 # The WSL distro to install and target.
-name = "Ubuntu-24.04"
+name = "Ubuntu-26.04"
 
 # Substring used to adopt an already-installed distro when `name` is absent —
 # so an existing Ubuntu-22.04 gets reused instead of a second distro being
